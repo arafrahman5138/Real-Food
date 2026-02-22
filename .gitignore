@@ -1,0 +1,16 @@
+# Ignore environment files
+backend/.env
+
+# Node / Expo
+node_modules/
+*.log
+/.expo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+/.venv

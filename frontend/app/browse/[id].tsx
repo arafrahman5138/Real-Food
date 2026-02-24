@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
+  Alert,
   View,
   Text,
   StyleSheet,
@@ -10,10 +11,11 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, Stack, router } from 'expo-router';
 import { useTheme } from '../../hooks/useTheme';
-import { recipeApi } from '../../services/api';
+import { nutritionApi, recipeApi } from '../../services/api';
 import { useSavedRecipesStore } from '../../stores/savedRecipesStore';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
 import { HEALTH_BENEFIT_OPTIONS, CUISINE_OPTIONS } from '../../constants/Config';
+import { CUISINE_EMOJI } from '../../constants/Recipes';
 
 interface Ingredient {
   name: string;
@@ -41,14 +43,6 @@ interface RecipeDetail {
   tags: string[];
 }
 
-const CUISINE_EMOJI: Record<string, string> = {
-  indian: '🇮🇳', thai: '🇹🇭', korean: '🇰🇷', mexican: '🇲🇽',
-  ethiopian: '🇪🇹', middle_eastern: '🕌', west_african: '🌍',
-  caribbean: '🏝️', japanese: '🇯🇵', chinese: '🇨🇳', vietnamese: '🇻🇳',
-  moroccan: '🇲🇦', indonesian: '🇮🇩', peruvian: '🇵🇪',
-  mediterranean: '🫒', turkish: '🇹🇷', american: '🇺🇸',
-};
-
 const MACRO_COLORS = {
   protein: '#22C55E',
   carbs: '#3B82F6',
@@ -60,7 +54,15 @@ export default function RecipeDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const theme = useTheme();
   const [recipe, setRecipe] = useState<RecipeDetail | null>(null);
+  const [modifiedRecipe, setModifiedRecipe] = useState<RecipeDetail | null>(null);
+  const [swaps, setSwaps] = useState<{ original: string; replacement: string; reason: string }[]>([]);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [customizing, setCustomizing] = useState(false);
+  const [useAllergies, setUseAllergies] = useState(true);
+  const [useDislikes, setUseDislikes] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [loggingMeal, setLoggingMeal] = useState(false);
+  const [logSuccess, setLogSuccess] = useState(false);
   const [checkedIngredients, setCheckedIngredients] = useState<Set<number>>(new Set());
   const { isSaved, saveRecipe, removeRecipe } = useSavedRecipesStore();
   const saved = id ? isSaved(id) : false;
@@ -87,8 +89,68 @@ export default function RecipeDetailScreen() {
   const getBenefitInfo = (hbId: string) =>
     HEALTH_BENEFIT_OPTIONS.find((h) => h.id === hbId);
 
-  const getCuisineLabel = (cId: string) =>
-    CUISINE_OPTIONS.find((c) => c.id === cId)?.label || cId.replace('_', ' ');
+  const getCuisineLabel = (cId: string) => {
+    if (!cId) return 'Unknown';
+    return CUISINE_OPTIONS.find((c) => c.id === cId)?.label || cId.replace(/_/g, ' ');
+  };
+
+  const handleCustomizeIngredients = async () => {
+    if (!id) return;
+    setCustomizing(true);
+    console.log('[Substitution] Starting LLM ingredient substitution for recipe:', id);
+    try {
+      setWarnings([]);
+      const result = await recipeApi.substitute(id, {
+        use_allergies: useAllergies,
+        use_dislikes: useDislikes,
+      });
+      console.log('[Substitution] Result:', { 
+        swaps: result?.swaps?.length || 0, 
+        used_ai: result?.used_ai,
+        warnings: result?.warnings 
+      });
+      setModifiedRecipe(result?.modified_recipe || null);
+      setSwaps(result?.swaps || []);
+      setWarnings(result?.warnings || []);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'LLM substitution failed.';
+      console.error('[Substitution] Error:', err);
+      setWarnings([message]);
+      setSwaps([]);
+    } finally {
+      setCustomizing(false);
+    }
+  };
+
+  const handleLogMeal = async () => {
+    const target = modifiedRecipe || recipe;
+    if (!target?.id || loggingMeal) return;
+    setLoggingMeal(true);
+    try {
+      await nutritionApi.createLog({
+        source_type: 'recipe',
+        source_id: target.id,
+        meal_type: 'meal',
+        servings: 1,
+        quantity: 1,
+      });
+      setLogSuccess(true);
+      setTimeout(() => setLogSuccess(false), 3000);
+      Alert.alert(
+        'Logged to Chronometer ✓',
+        `"${target.title}" has been added to today's nutrition log.`,
+        [
+          { text: 'View Chronometer', onPress: () => router.push('/(tabs)/chronometer' as any) },
+          { text: 'Stay Here', style: 'cancel' },
+        ],
+      );
+    } catch (e) {
+      console.error('Log meal failed', e);
+      Alert.alert('Error', 'Failed to log meal. Please try again.');
+    } finally {
+      setLoggingMeal(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -107,7 +169,9 @@ export default function RecipeDetailScreen() {
     );
   }
 
-  const nutrition = recipe.nutrition_info || {};
+  const activeRecipe = modifiedRecipe || recipe;
+
+  const nutrition = activeRecipe.nutrition_info || {};
   const macros = [
     { label: 'Protein', value: nutrition.protein, unit: 'g', color: MACRO_COLORS.protein },
     { label: 'Carbs', value: nutrition.carbs, unit: 'g', color: MACRO_COLORS.carbs },
@@ -128,14 +192,14 @@ export default function RecipeDetailScreen() {
     })
     .filter((m) => m.value > 0);
 
-  const goodForSummary = recipe.health_benefits
+  const goodForSummary = activeRecipe.health_benefits
     ?.slice(0, 4)
     .map((hb) => getBenefitInfo(hb)?.label || hb.replace('_', ' '))
     .join(', ');
 
   return (
     <>
-      <Stack.Screen options={{ headerTitle: recipe.title.length > 24 ? recipe.title.slice(0, 24) + '...' : recipe.title }} />
+      <Stack.Screen options={{ headerTitle: activeRecipe.title.length > 24 ? activeRecipe.title.slice(0, 24) + '...' : activeRecipe.title }} />
       <ScrollView
         style={[styles.container, { backgroundColor: theme.background }]}
         contentContainerStyle={styles.scrollContent}
@@ -144,14 +208,25 @@ export default function RecipeDetailScreen() {
         {/* Header */}
         <View style={styles.header}>
           <View style={[styles.cuisineBadge, { backgroundColor: theme.primaryMuted }]}>
-            <Text style={styles.cuisineEmoji}>{CUISINE_EMOJI[recipe.cuisine] || '🍽️'}</Text>
+            <Text style={styles.cuisineEmoji}>{CUISINE_EMOJI[activeRecipe.cuisine] || '🍽️'}</Text>
             <Text style={[styles.cuisineText, { color: theme.primary }]}>
-              {getCuisineLabel(recipe.cuisine)}
+              {getCuisineLabel(activeRecipe.cuisine)}
             </Text>
           </View>
 
           <View style={styles.titleRow}>
-            <Text style={[styles.title, { color: theme.text, flex: 1 }]}>{recipe.title}</Text>
+            <Text style={[styles.title, { color: theme.text, flex: 1 }]}>{activeRecipe.title}</Text>
+            <TouchableOpacity
+              onPress={handleLogMeal}
+              activeOpacity={0.7}
+              style={[styles.saveBtn, { backgroundColor: logSuccess ? theme.primaryMuted : theme.infoMuted }]}
+            >
+              <Ionicons
+                name={loggingMeal ? 'time-outline' : logSuccess ? 'checkmark-circle' : 'add-circle-outline'}
+                size={20}
+                color={logSuccess ? theme.primary : theme.info}
+              />
+            </TouchableOpacity>
             <TouchableOpacity
               onPress={() => (saved ? removeRecipe(id!) : saveRecipe(id!))}
               activeOpacity={0.7}
@@ -165,14 +240,64 @@ export default function RecipeDetailScreen() {
             </TouchableOpacity>
           </View>
           <Text style={[styles.description, { color: theme.textSecondary }]}>
-            {recipe.description}
+            {activeRecipe.description}
           </Text>
+
+          <View style={styles.customizeRow}>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => setUseAllergies((v) => !v)}
+              style={[styles.customizeChip, { backgroundColor: useAllergies ? theme.primaryMuted : theme.surfaceElevated }]}
+            >
+              <Text style={[styles.customizeChipText, { color: useAllergies ? theme.primary : theme.textSecondary }]}>Use allergies</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => setUseDislikes((v) => !v)}
+              style={[styles.customizeChip, { backgroundColor: useDislikes ? theme.primaryMuted : theme.surfaceElevated }]}
+            >
+              <Text style={[styles.customizeChipText, { color: useDislikes ? theme.primary : theme.textSecondary }]}>Use dislikes</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={handleCustomizeIngredients}
+              style={[styles.customizeBtn, { backgroundColor: theme.primary }]}
+            >
+              {customizing ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="sparkles" size={14} color="#fff" />
+                  <Text style={styles.customizeBtnText}>Customize Ingredients</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {swaps.length > 0 && (
+            <View style={[styles.swapBox, { backgroundColor: theme.surfaceElevated }]}> 
+              <Text style={[styles.swapTitle, { color: theme.text }]}>Applied swaps</Text>
+              {swaps.map((swap, idx) => (
+                <Text key={`${swap.original}-${idx}`} style={[styles.swapItem, { color: theme.textSecondary }]}> 
+                  {swap.original} → {swap.replacement}
+                </Text>
+              ))}
+            </View>
+          )}
+
+          {warnings.length > 0 && (
+            <View style={[styles.warningBox, { backgroundColor: theme.accentMuted }]}> 
+              {warnings.map((w, idx) => (
+                <Text key={idx} style={[styles.warningText, { color: theme.warning }]}>{w}</Text>
+              ))}
+            </View>
+          )}
 
           {/* Meta Row */}
           <View style={styles.metaRow}>
             <View style={[styles.metaBox, { backgroundColor: theme.surfaceElevated }]}>
               <Ionicons name="time-outline" size={18} color={theme.primary} />
-              <Text style={[styles.metaValue, { color: theme.text }]}>{recipe.total_time_min}m</Text>
+              <Text style={[styles.metaValue, { color: theme.text }]}>{activeRecipe.total_time_min}m</Text>
               <Text style={[styles.metaLabel, { color: theme.textTertiary }]}>Total</Text>
             </View>
             <View style={[styles.metaBox, { backgroundColor: theme.surfaceElevated }]}>
@@ -182,25 +307,25 @@ export default function RecipeDetailScreen() {
             </View>
             <View style={[styles.metaBox, { backgroundColor: theme.surfaceElevated }]}>
               <Ionicons name="people-outline" size={18} color={theme.info} />
-              <Text style={[styles.metaValue, { color: theme.text }]}>{recipe.servings}</Text>
+              <Text style={[styles.metaValue, { color: theme.text }]}>{activeRecipe.servings}</Text>
               <Text style={[styles.metaLabel, { color: theme.textTertiary }]}>Servings</Text>
             </View>
             <View style={[styles.metaBox, { backgroundColor: theme.surfaceElevated }]}>
-              <Ionicons name="speedometer-outline" size={18} color={theme.warning} />
-              <Text style={[styles.metaValue, { color: theme.text }]}>{recipe.difficulty}</Text>
+              <Ionicons name="speedometer-outline" size={18} color={theme.accent} />
+              <Text style={[styles.metaValue, { color: theme.text }]}>{activeRecipe.difficulty}</Text>
               <Text style={[styles.metaLabel, { color: theme.textTertiary }]}>Level</Text>
             </View>
           </View>
 
           {/* Flavor & Dietary Tags */}
-          {(recipe.flavor_profile?.length > 0 || recipe.dietary_tags?.length > 0) && (
+          {(activeRecipe.flavor_profile?.length > 0 || activeRecipe.dietary_tags?.length > 0) && (
             <View style={styles.tagRow}>
-              {recipe.flavor_profile?.map((f) => (
+              {activeRecipe.flavor_profile?.map((f) => (
                 <View key={f} style={[styles.tag, { backgroundColor: theme.accentMuted }]}>
                   <Text style={[styles.tagText, { color: theme.accent }]}>{f}</Text>
                 </View>
               ))}
-              {recipe.dietary_tags?.map((d) => (
+              {activeRecipe.dietary_tags?.map((d) => (
                 <View key={d} style={[styles.tag, { backgroundColor: theme.infoMuted }]}>
                   <Text style={[styles.tagText, { color: theme.info }]}>{d}</Text>
                 </View>
@@ -210,7 +335,7 @@ export default function RecipeDetailScreen() {
         </View>
 
         {/* Good For / Health Benefits */}
-        {recipe.health_benefits?.length > 0 && (
+        {activeRecipe.health_benefits?.length > 0 && (
           <View style={[styles.section, { backgroundColor: theme.surface, borderColor: theme.border }]}>
             <Text style={[styles.sectionTitle, { color: theme.text }]}>Good For</Text>
             {goodForSummary && (
@@ -219,7 +344,7 @@ export default function RecipeDetailScreen() {
               </Text>
             )}
             <View style={styles.benefitGrid}>
-              {recipe.health_benefits.map((hb) => {
+              {activeRecipe.health_benefits.map((hb) => {
                 const info = getBenefitInfo(hb);
                 return (
                   <View
@@ -295,9 +420,9 @@ export default function RecipeDetailScreen() {
         {/* Ingredients */}
         <View style={[styles.section, { backgroundColor: theme.surface, borderColor: theme.border }]}>
           <Text style={[styles.sectionTitle, { color: theme.text }]}>
-            Ingredients ({recipe.ingredients.length})
+            Ingredients ({activeRecipe.ingredients.length})
           </Text>
-          {recipe.ingredients.map((ing, idx) => (
+          {activeRecipe.ingredients.map((ing, idx) => (
             <TouchableOpacity
               key={idx}
               style={styles.ingredientRow}
@@ -345,7 +470,7 @@ export default function RecipeDetailScreen() {
               <Text style={[styles.cookModeBtnText, { color: theme.primary }]}>Open Cook Mode</Text>
             </TouchableOpacity>
           </View>
-          {recipe.steps.map((step, idx) => (
+          {activeRecipe.steps.map((step, idx) => (
             <View key={idx} style={styles.stepRow}>
               <View style={[styles.stepNumber, { backgroundColor: theme.primaryMuted }]}>
                 <Text style={[styles.stepNumberText, { color: theme.primary }]}>{idx + 1}</Text>
@@ -355,8 +480,36 @@ export default function RecipeDetailScreen() {
           ))}
         </View>
 
-        <View style={{ height: Spacing.huge }} />
+        <View style={{ height: 100 }} />
       </ScrollView>
+
+      {/* Sticky Log to Chronometer bar */}
+      <View style={[styles.logBar, { backgroundColor: theme.surface, borderTopColor: theme.border }]}>
+        <TouchableOpacity
+          style={[
+            styles.logBarBtn,
+            { backgroundColor: logSuccess ? theme.primaryMuted : theme.primary },
+          ]}
+          onPress={handleLogMeal}
+          disabled={loggingMeal}
+          activeOpacity={0.8}
+        >
+          {loggingMeal ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <>
+              <Ionicons
+                name={logSuccess ? 'checkmark-circle' : 'nutrition-outline'}
+                size={18}
+                color={logSuccess ? theme.primary : '#fff'}
+              />
+              <Text style={[styles.logBarText, logSuccess && { color: theme.primary }]}>
+                {logSuccess ? 'Logged to Chronometer ✓' : 'Log to Chronometer'}
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
     </>
   );
 }
@@ -420,6 +573,59 @@ const styles = StyleSheet.create({
   description: {
     fontSize: FontSize.md,
     lineHeight: 22,
+  },
+  customizeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  customizeChip: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.full,
+  },
+  customizeChipText: {
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+  },
+  customizeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
+    borderRadius: BorderRadius.full,
+  },
+  customizeBtnText: {
+    color: '#fff',
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+  },
+  swapBox: {
+    marginTop: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.md,
+    gap: 6,
+  },
+  swapTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: '700',
+  },
+  swapItem: {
+    fontSize: FontSize.xs,
+    lineHeight: 18,
+  },
+  warningBox: {
+    marginTop: Spacing.xs,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.sm,
+    gap: 4,
+  },
+  warningText: {
+    fontSize: FontSize.xs,
+    fontWeight: '600',
   },
   metaRow: {
     flexDirection: 'row',
@@ -622,5 +828,28 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: FontSize.sm,
     lineHeight: 22,
+  },
+  logBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.xxl,
+    borderTopWidth: 1,
+  },
+  logBarBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    height: 48,
+    borderRadius: BorderRadius.md,
+  },
+  logBarText: {
+    color: '#fff',
+    fontSize: FontSize.md,
+    fontWeight: '700',
   },
 });

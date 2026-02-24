@@ -60,7 +60,7 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="meal-plan"
+        name="meals"
         options={{
           title: 'Meals',
           tabBarIcon: ({ color, size }) => (
@@ -69,11 +69,11 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="grocery"
+        name="chronometer"
         options={{
-          title: 'Grocery',
+          title: 'Chrono',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="cart" size={size} color={color} />
+            <Ionicons name="analytics" size={size} color={color} />
           ),
         }}
       />

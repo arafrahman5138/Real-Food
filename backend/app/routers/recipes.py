@@ -1,5 +1,5 @@
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.auth import get_current_user
@@ -8,6 +8,7 @@ from app.models.recipe import Recipe
 from app.models.saved_recipe import SavedRecipe
 from app.nutrition_tags import HEALTH_BENEFIT_LABELS
 from app.achievements_engine import check_achievements
+from app.services.ingredient_substitution import apply_user_substitutions
 from typing import Optional
 
 router = APIRouter()
@@ -226,6 +227,10 @@ async def save_recipe(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    recipe_exists = db.query(Recipe).filter(Recipe.id == recipe_id).first()
+    if not recipe_exists:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+
     existing = (
         db.query(SavedRecipe)
         .filter(SavedRecipe.user_id == current_user.id, SavedRecipe.recipe_id == recipe_id)
@@ -266,6 +271,128 @@ from pydantic import BaseModel as _BM
 class CookHelpBody(_BM):
     step_number: int = 0
     question: str = ""
+
+
+class SubstitutionBody(_BM):
+    use_allergies: bool = True
+    use_dislikes: bool = True
+    custom_excludes: list[str] = []
+
+
+class SaveGeneratedRecipeBody(_BM):
+    title: str
+    description: str = ""
+    ingredients: list[dict] = []
+    steps: list[str] = []
+    prep_time_min: int = 0
+    cook_time_min: int = 0
+    servings: int = 1
+    difficulty: str = "easy"
+    tags: list[str] = []
+    flavor_profile: list[str] = []
+    dietary_tags: list[str] = []
+    cuisine: str = "american"
+    health_benefits: list[str] = []
+    nutrition_info: dict = {}
+
+
+@router.post("/saved")
+async def save_generated_recipe(
+    body: SaveGeneratedRecipeBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    recipe = Recipe(
+        id=str(uuid.uuid4()),
+        title=body.title.strip() or "Healthified Recipe",
+        description=body.description,
+        ingredients=body.ingredients or [],
+        steps=body.steps or [],
+        prep_time_min=body.prep_time_min or 0,
+        cook_time_min=body.cook_time_min or 0,
+        total_time_min=(body.prep_time_min or 0) + (body.cook_time_min or 0),
+        servings=body.servings or 1,
+        nutrition_info=body.nutrition_info or {},
+        difficulty=body.difficulty or "easy",
+        tags=body.tags or ["healthify"],
+        flavor_profile=body.flavor_profile or [],
+        dietary_tags=body.dietary_tags or [],
+        cuisine=body.cuisine or "american",
+        health_benefits=body.health_benefits or [],
+        is_ai_generated=True,
+    )
+    db.add(recipe)
+    db.flush()
+
+    db.add(SavedRecipe(id=str(uuid.uuid4()), user_id=current_user.id, recipe_id=recipe.id))
+    db.commit()
+
+    saved_count = db.query(SavedRecipe).filter(SavedRecipe.user_id == current_user.id).count()
+    new_achievements = check_achievements(db, current_user, {"saved_recipe_count": saved_count})
+
+    return {
+        "status": "saved",
+        "recipe_id": str(recipe.id),
+        "achievements": new_achievements,
+    }
+
+
+@router.post("/{recipe_id}/substitute")
+async def substitute_recipe_ingredients(
+    recipe_id: str,
+    body: SubstitutionBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    recipe = db.query(Recipe).filter(Recipe.id == recipe_id).first()
+    if not recipe:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+
+    original_recipe = _serialize_recipe_full(recipe)
+
+    allergies = current_user.allergies if body.use_allergies else []
+    disliked_ingredients = current_user.disliked_ingredients if body.use_dislikes else []
+    protein_preferences = current_user.protein_preferences or {}
+
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "substitute.start recipe_id=%s user_id=%s allergies=%s dislikes=%s",
+        recipe_id, current_user.id, allergies, disliked_ingredients
+    )
+
+    try:
+        subs_result = await apply_user_substitutions(
+            recipe=original_recipe,
+            allergies=allergies or [],
+            disliked_ingredients=disliked_ingredients or [],
+            liked_proteins=protein_preferences.get("liked", []),
+            disliked_proteins=protein_preferences.get("disliked", []),
+            custom_excludes=body.custom_excludes or [],
+            timeout_s=90,
+            allow_fallback=False,
+        )
+        logger.info(
+            "substitute.success recipe_id=%s swaps=%s used_ai=%s",
+            recipe_id, len(subs_result.get("swaps", [])), subs_result.get("used_ai")
+        )
+    except Exception as exc:
+        logger.exception(
+            "substitute.failed recipe_id=%s user_id=%s error=%s",
+            recipe_id, current_user.id, exc
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "original_recipe": original_recipe,
+        "modified_recipe": subs_result.get("modified_recipe", original_recipe),
+        "swaps": subs_result.get("swaps", []),
+        "warnings": subs_result.get("warnings", []),
+        "used_ai": subs_result.get("used_ai", False),
+    }
 
 
 @router.post("/{recipe_id}/cook-help")

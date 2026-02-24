@@ -13,7 +13,9 @@ class Settings(BaseSettings):
     google_api_key: str = ""
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
-    llm_provider: str = "gemini"  # "gemini", "openai", or "anthropic"
+    llm_provider: str = "gemini"  # "gemini", "openai", "anthropic", or "ollama"
+    ollama_host: str = "127.0.0.1:11434"
+    ollama_model: str = "qwen2.5-coder:14b"
     usda_api_key: str = ""
     spoonacular_api_key: str = ""
 

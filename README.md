@@ -44,6 +44,8 @@ npm install
 npx expo start
 ```
 
+**Note**: For social authentication (Google/Apple), see [OAUTH_SETUP.md](OAUTH_SETUP.md) for configuration instructions.
+
 ### Backend Setup
 
 ```bash

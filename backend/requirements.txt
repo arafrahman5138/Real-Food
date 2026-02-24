@@ -4,14 +4,14 @@ sqlalchemy==2.0.35
 alembic==1.13.3
 # psycopg2-binary==2.9.9  # Uncomment if using PostgreSQL
 python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
+bcrypt==4.2.1
 python-multipart==0.0.12
 pydantic[email]==2.9.2
 pydantic-settings==2.5.2
 httpx==0.27.2
-langchain==0.3.7
-langchain-openai==0.2.6
-langchain-anthropic==0.2.4
-langchain-google-genai==2.0.6
+langchain-openai
+langchain-anthropic
+langchain-google-genai
+langchain-ollama
 langgraph==0.2.45
 python-dotenv==1.0.1

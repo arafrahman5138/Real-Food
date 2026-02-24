@@ -1,15 +1,38 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useTheme } from '../hooks/useTheme';
 import { useThemeStore } from '../stores/themeStore';
+import { useAuthStore } from '../stores/authStore';
+import { useGamificationStore } from '../stores/gamificationStore';
 
 export default function RootLayout() {
   const theme = useTheme();
   const mode = useThemeStore((s) => s.mode);
+  const appState = useRef(AppState.currentState);
 
   useEffect(() => {
     useThemeStore.getState().loadSaved();
+    useAuthStore.getState().loadAuth();
+    // Sync streak on initial launch
+    useGamificationStore.getState().syncStreak();
+  }, []);
+
+  useEffect(() => {
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (appState.current.match(/inactive|background/) && nextState === 'active') {
+        // App came to foreground — sync streak
+        const token = useAuthStore.getState().token;
+        if (token) {
+          useGamificationStore.getState().syncStreak();
+        }
+      }
+      appState.current = nextState;
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
   }, []);
 
   return (
@@ -57,6 +80,24 @@ export default function RootLayout() {
           options={{
             headerShown: true,
             headerTitle: 'Recipe',
+            headerStyle: { backgroundColor: theme.surface },
+            headerTintColor: theme.text,
+          }}
+        />
+        <Stack.Screen
+          name="saved/index"
+          options={{
+            headerShown: true,
+            headerTitle: 'Saved Recipes',
+            headerStyle: { backgroundColor: theme.surface },
+            headerTintColor: theme.text,
+          }}
+        />
+        <Stack.Screen
+          name="preferences"
+          options={{
+            headerShown: true,
+            headerTitle: 'Preferences',
             headerStyle: { backgroundColor: theme.surface },
             headerTintColor: theme.text,
           }}

@@ -37,6 +37,9 @@ class UserProfile(BaseModel):
     dietary_preferences: list
     flavor_preferences: list
     allergies: list
+    liked_ingredients: list
+    disliked_ingredients: list
+    protein_preferences: dict
     cooking_time_budget: dict
     household_size: int
     budget_level: str
@@ -52,6 +55,9 @@ class UserPreferencesUpdate(BaseModel):
     dietary_preferences: Optional[list] = None
     flavor_preferences: Optional[list] = None
     allergies: Optional[list] = None
+    liked_ingredients: Optional[list] = None
+    disliked_ingredients: Optional[list] = None
+    protein_preferences: Optional[dict] = None
     cooking_time_budget: Optional[dict] = None
     household_size: Optional[int] = None
     budget_level: Optional[str] = None

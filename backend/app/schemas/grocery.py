@@ -8,7 +8,6 @@ class GroceryItem(BaseModel):
     unit: str
     category: str  # produce, protein, dairy, grains, pantry, spices
     checked: bool = False
-    estimated_price: Optional[float] = None
 
 
 class GroceryListResponse(BaseModel):

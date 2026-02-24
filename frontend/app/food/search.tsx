@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   StyleSheet,
@@ -31,22 +31,45 @@ export default function FoodSearchScreen() {
   const [results, setResults] = useState<FoodItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const canSearch = useMemo(() => query.trim().length >= 2, [query]);
 
-  const runSearch = async () => {
+  const runSearch = useCallback(async (pageNum = 1, append = false) => {
     if (!canSearch || loading) return;
     setLoading(true);
     setError('');
     try {
-      const data = await foodApi.search(query.trim(), 1);
+      const data = await foodApi.search(query.trim(), pageNum);
       const foods = Array.isArray(data?.foods) ? data.foods : Array.isArray(data) ? data : [];
-      setResults(foods);
+      setResults((prev) => (append ? [...prev, ...foods] : foods));
+      setPage(pageNum);
+      setHasMore(foods.length >= 20);
     } catch (e: any) {
       setError(e?.message || 'Failed to search foods.');
-      setResults([]);
+      if (!append) setResults([]);
     } finally {
       setLoading(false);
+    }
+  }, [canSearch, loading, query]);
+
+  // Debounced auto-search on query change
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (query.trim().length < 2) return;
+    debounceRef.current = setTimeout(() => {
+      runSearch(1, false);
+    }, 400);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [query]);
+
+  const loadMore = () => {
+    if (!loading && hasMore) {
+      runSearch(page + 1, true);
     }
   };
 
@@ -66,10 +89,10 @@ export default function FoodSearchScreen() {
           placeholder="Search: chicken breast, avocado, greek yogurt..."
           placeholderTextColor={theme.textTertiary}
           returnKeyType="search"
-          onSubmitEditing={runSearch}
+          onSubmitEditing={() => runSearch(1, false)}
         />
         <TouchableOpacity
-          onPress={runSearch}
+          onPress={() => runSearch(1, false)}
           disabled={!canSearch || loading}
           style={[styles.searchBtn, { backgroundColor: canSearch ? theme.primary : theme.surfaceHighlight }]}
         >
@@ -89,6 +112,8 @@ export default function FoodSearchScreen() {
           data={results}
           keyExtractor={(item, idx) => String(item.fdc_id || item.id || idx)}
           contentContainerStyle={{ paddingTop: Spacing.md, paddingBottom: Spacing.huge }}
+          onEndReached={loadMore}
+          onEndReachedThreshold={0.3}
           ListEmptyComponent={
             <Card padding={Spacing.lg}>
               <Text style={[styles.emptyTitle, { color: theme.text }]}>No results yet</Text>

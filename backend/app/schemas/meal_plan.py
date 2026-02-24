@@ -7,6 +7,9 @@ class MealPlanPreferences(BaseModel):
     flavor_preferences: List[str] = []  # spicy, savory, sweet, umami, mild
     dietary_restrictions: List[str] = []  # vegan, vegetarian, gluten-free, etc.
     allergies: List[str] = []
+    liked_ingredients: List[str] = []
+    disliked_ingredients: List[str] = []
+    protein_preferences: dict = {}
     cooking_time_budget: dict = {
         "quick": 4,    # number of quick meals per week
         "medium": 2,   # number of medium meals per week
@@ -21,6 +24,7 @@ class MealPlanPreferences(BaseModel):
 class MealPlanGenerate(BaseModel):
     week_start: Optional[date] = None
     preferences: Optional[MealPlanPreferences] = None
+    apply_substitutions: bool = False
 
 
 class MealPlanItemResponse(BaseModel):

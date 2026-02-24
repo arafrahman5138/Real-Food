@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   ScrollView,
   TouchableOpacity,
   Dimensions,
+  RefreshControl,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,6 +22,16 @@ import { gameApi } from '../../services/api';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
 
 const { width } = Dimensions.get('window');
+
+const DAILY_TIPS = [
+  'Swap refined vegetable oils with extra virgin olive oil or avocado oil. They\'re rich in healthy monounsaturated fats and antioxidants.',
+  'Aim for at least 30 different plant foods per week — fruits, vegetables, nuts, seeds, herbs, and whole grains — to support gut microbiome diversity.',
+  'Eat the rainbow! Different colored produce provides different phytonutrients. Try to include at least 3 colors at each meal.',
+  'Wild-caught fish like salmon, mackerel, and sardines are excellent sources of omega-3 fatty acids essential for brain and heart health.',
+  'Fermented foods like yogurt, kimchi, sauerkraut, and kefir support a healthy gut. Try to include one serving daily.',
+  'Soaking and sprouting grains, nuts, and legumes can increase nutrient bioavailability and reduce anti-nutrients like phytic acid.',
+  'Dark leafy greens like kale, spinach, and Swiss chard are among the most nutrient-dense foods on the planet. Aim for a daily serving.',
+];
 
 interface QuickAction {
   icon: keyof typeof Ionicons.glyphMap;
@@ -47,9 +58,27 @@ export default function HomeScreen() {
     foods_explored: 0,
     xp_earned: 0,
   });
+  const [statsError, setStatsError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadStats = async () => {
+    setStatsError(false);
+    try {
+      const data = await gameApi.getWeeklyStats();
+      setWeeklyStats(data);
+    } catch {
+      setStatsError(true);
+    }
+  };
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadStats();
+    setRefreshing(false);
+  }, []);
 
   useEffect(() => {
-    gameApi.getWeeklyStats().then(setWeeklyStats).catch(() => {});
+    loadStats();
   }, []);
 
   const quickActions: QuickAction[] = [
@@ -62,19 +91,19 @@ export default function HomeScreen() {
     {
       icon: 'restaurant',
       label: 'Meal\nPlan',
-      route: '/(tabs)/meal-plan',
+      route: '/(tabs)/meals?tab=plan',
       gradient: ['#3B82F6', '#2563EB'],
     },
     {
       icon: 'cart',
       label: 'Grocery\nList',
-      route: '/(tabs)/grocery',
+      route: '/(tabs)/meals?tab=grocery',
       gradient: ['#F59E0B', '#D97706'],
     },
     {
       icon: 'book',
       label: 'Browse\nRecipes',
-      route: '/browse',
+      route: '/(tabs)/meals?tab=browse',
       gradient: ['#EC4899', '#DB2777'],
     },
     {
@@ -83,14 +112,28 @@ export default function HomeScreen() {
       route: '/food/search',
       gradient: ['#8B5CF6', '#7C3AED'],
     },
+    {
+      icon: 'trophy',
+      label: 'My\nProfile',
+      route: '/(tabs)/profile',
+      gradient: ['#14B8A6', '#0D9488'],
+    },
   ];
 
   const firstName = user?.name?.split(' ')[0] || 'there';
   const greeting = getGreeting();
+  const dailyTip = useMemo(() => {
+    const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000);
+    return DAILY_TIPS[dayOfYear % DAILY_TIPS.length];
+  }, []);
 
   return (
     <ScreenContainer>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scroll}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.primary} />}
+      >
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
@@ -163,8 +206,7 @@ export default function HomeScreen() {
             <Text style={[styles.tipTitle, { color: theme.accent }]}>Daily Tip</Text>
           </View>
           <Text style={[styles.tipText, { color: theme.textSecondary }]}>
-            Swap refined vegetable oils with extra virgin olive oil or avocado oil.
-            They're rich in healthy monounsaturated fats and antioxidants.
+            {dailyTip}
           </Text>
         </Card>
 
@@ -191,6 +233,21 @@ export default function HomeScreen() {
 
         {/* Weekly Summary */}
         <Text style={[styles.sectionTitle, { color: theme.text, marginTop: Spacing.xxl }]}>This Week</Text>
+        {statsError ? (
+          <Card padding={Spacing.lg}>
+            <View style={{ alignItems: 'center', gap: Spacing.sm }}>
+              <Ionicons name="cloud-offline-outline" size={28} color={theme.textTertiary} />
+              <Text style={{ color: theme.textSecondary, fontSize: FontSize.sm, textAlign: 'center' }}>Unable to load weekly stats</Text>
+              <TouchableOpacity
+                onPress={loadStats}
+                style={{ backgroundColor: theme.primaryMuted, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm, borderRadius: BorderRadius.full }}
+              >
+                <Text style={{ color: theme.primary, fontSize: FontSize.sm, fontWeight: '700' }}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          </Card>
+        ) : (
+        <>
         <View style={styles.statsRow}>
           <Card style={styles.statCard} padding={Spacing.md}>
             <Text style={[styles.statNumber, { color: theme.primary }]}>{weeklyStats.meals_cooked}</Text>
@@ -200,11 +257,19 @@ export default function HomeScreen() {
             <Text style={[styles.statNumber, { color: theme.accent }]}>{weeklyStats.recipes_saved}</Text>
             <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Recipes Saved</Text>
           </Card>
+        </View>
+        <View style={[styles.statsRow, { marginTop: Spacing.md }]}>
+          <Card style={styles.statCard} padding={Spacing.md}>
+            <Text style={[styles.statNumber, { color: '#8B5CF6' }]}>{weeklyStats.foods_explored}</Text>
+            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Foods Explored</Text>
+          </Card>
           <Card style={styles.statCard} padding={Spacing.md}>
             <Text style={[styles.statNumber, { color: theme.info }]}>{weeklyStats.xp_earned}</Text>
             <Text style={[styles.statLabel, { color: theme.textSecondary }]}>XP Earned</Text>
           </Card>
         </View>
+        </>
+        )}
 
         <View style={{ height: Spacing.huge }} />
       </ScrollView>

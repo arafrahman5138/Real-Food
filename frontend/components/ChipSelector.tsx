@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { BorderRadius, FontSize, Spacing } from '../constants/Colors';
 import { useTheme } from '../hooks/useTheme';
 
@@ -43,6 +44,14 @@ export function ChipSelector({
           },
         ]}
       >
+        {option.icon && (
+          <Ionicons
+            name={option.icon as any}
+            size={14}
+            color={isSelected ? theme.primary : theme.textSecondary}
+            style={{ marginRight: 4 }}
+          />
+        )}
         <Text
           style={[
             styles.chipText,
@@ -95,6 +104,8 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm + 2,
     borderRadius: BorderRadius.full,
     borderWidth: 1.5,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   chipText: {
     fontSize: FontSize.sm,

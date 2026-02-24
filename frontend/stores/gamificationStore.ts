@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { gameApi } from '../services/api';
 
 export type DailyQuestId = 'healthify' | 'meal_plan' | 'grocery';
 
@@ -17,6 +18,9 @@ interface GamificationState {
   completeAction: (id: DailyQuestId, amount?: number) => { gainedXp: number; justCompleted: boolean };
   resetDailyQuests: () => void;
   completionPct: number;
+  syncStreak: () => Promise<void>;
+  syncAchievements: () => Promise<string[]>;
+  lastStreakSync: string | null;
 }
 
 const INITIAL_QUESTS: DailyQuest[] = [
@@ -52,6 +56,8 @@ const INITIAL_QUESTS: DailyQuest[] = [
 export const useGamificationStore = create<GamificationState>((set, get) => ({
   quests: INITIAL_QUESTS,
   completionPct: 0,
+  lastStreakSync: null,
+
   completeAction: (id, amount = 1) => {
     let gainedXp = 0;
     let justCompleted = false;
@@ -72,11 +78,35 @@ export const useGamificationStore = create<GamificationState>((set, get) => ({
       return { quests, completionPct: Math.round((completedCount / quests.length) * 100) };
     });
 
+    // Fire-and-forget: check achievements after meaningful actions
+    get().syncAchievements().catch(() => {});
+
     return { gainedXp, justCompleted };
   },
+
   resetDailyQuests: () =>
     set({
       quests: INITIAL_QUESTS,
       completionPct: 0,
     }),
+
+  syncStreak: async () => {
+    const today = new Date().toISOString().split('T')[0];
+    if (get().lastStreakSync === today) return;
+    try {
+      await gameApi.updateStreak();
+      set({ lastStreakSync: today });
+    } catch {
+      // Silent — streak will be synced on next foreground
+    }
+  },
+
+  syncAchievements: async () => {
+    try {
+      const result = await gameApi.checkAchievements();
+      return result?.newly_unlocked || [];
+    } catch {
+      return [];
+    }
+  },
 }));

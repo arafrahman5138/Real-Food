@@ -4,6 +4,15 @@ export const API_URL = __DEV__
 
 export const APP_NAME = 'WholeFoodLabs';
 
+// OAuth Configuration
+export const GOOGLE_CLIENT_ID = __DEV__
+  ? 'YOUR_DEV_GOOGLE_CLIENT_ID.apps.googleusercontent.com'
+  : 'YOUR_PROD_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
+
+export const GOOGLE_IOS_CLIENT_ID = __DEV__
+  ? 'YOUR_DEV_GOOGLE_IOS_CLIENT_ID.apps.googleusercontent.com'
+  : 'YOUR_PROD_GOOGLE_IOS_CLIENT_ID.apps.googleusercontent.com';
+
 export const FLAVOR_OPTIONS = [
   { id: 'spicy', label: 'Spicy', icon: 'fire' },
   { id: 'savory', label: 'Savory', icon: 'food-steak' },
@@ -33,6 +42,28 @@ export const ALLERGY_OPTIONS = [
   { id: 'wheat', label: 'Wheat' },
   { id: 'fish', label: 'Fish' },
   { id: 'sesame', label: 'Sesame' },
+];
+
+export const DISLIKED_INGREDIENT_OPTIONS = [
+  { id: 'kale', label: 'Kale' },
+  { id: 'cilantro', label: 'Cilantro' },
+  { id: 'mushrooms', label: 'Mushrooms' },
+  { id: 'olives', label: 'Olives' },
+  { id: 'eggplant', label: 'Eggplant' },
+  { id: 'beets', label: 'Beets' },
+  { id: 'cauliflower', label: 'Cauliflower' },
+  { id: 'brussels sprouts', label: 'Brussels Sprouts' },
+];
+
+export const PROTEIN_OPTIONS = [
+  { id: 'chicken', label: 'Chicken' },
+  { id: 'beef', label: 'Beef' },
+  { id: 'salmon', label: 'Salmon' },
+  { id: 'trout', label: 'Trout' },
+  { id: 'tofu', label: 'Tofu' },
+  { id: 'turkey', label: 'Turkey' },
+  { id: 'eggs', label: 'Eggs' },
+  { id: 'shrimp', label: 'Shrimp' },
 ];
 
 export const CUISINE_OPTIONS = [

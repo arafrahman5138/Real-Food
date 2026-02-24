@@ -9,8 +9,12 @@ from app.auth import get_current_user
 from app.models.user import User
 from app.models.meal_plan import MealPlan, MealPlanItem
 from app.schemas.meal_plan import MealPlanGenerate, MealPlanResponse, MealPlanItemResponse
-from app.agents.meal_planner import generate_meal_plan_agent
 from app.agents.meal_planner_fallback import generate_fallback_meal_plan
+from app.services.ingredient_substitution import (
+    apply_user_substitutions,
+    deterministic_substitute,
+    MEAL_PLAN_AI_SUBSTITUTION_TIMEOUT_S,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -31,6 +35,9 @@ async def generate_meal_plan(
             flavor_preferences=current_user.flavor_preferences or [],
             dietary_restrictions=current_user.dietary_preferences or [],
             allergies=current_user.allergies or [],
+            liked_ingredients=current_user.liked_ingredients or [],
+            disliked_ingredients=current_user.disliked_ingredients or [],
+            protein_preferences=current_user.protein_preferences or {},
             cooking_time_budget=current_user.cooking_time_budget or {"quick": 4, "medium": 2, "long": 1},
             household_size=current_user.household_size,
             budget_level=current_user.budget_level,
@@ -38,14 +45,8 @@ async def generate_meal_plan(
 
     prefs_dict = preferences.model_dump()
 
-    # Try LLM first; on any failure fall back to seeded recipes
-    try:
-        result = await generate_meal_plan_agent(prefs_dict)
-        if not result.get("days"):
-            raise ValueError("LLM returned an empty plan")
-    except Exception as exc:
-        logger.warning("LLM meal plan generation failed (%s), using DB fallback.", exc)
-        result = generate_fallback_meal_plan(db, prefs_dict)
+    # Use DB meals directly (no LLM call needed)
+    result = generate_fallback_meal_plan(db, prefs_dict)
 
     meal_plan = MealPlan(
         user_id=current_user.id,
@@ -55,8 +56,43 @@ async def generate_meal_plan(
     db.add(meal_plan)
     db.flush()
 
+    ai_substitutions_used = 0
+    max_ai_substitutions = 3
+
     for day_data in result.get("days", []):
         for meal_data in day_data.get("meals", []):
+            recipe_data = meal_data.get("recipe", {})
+            if request.apply_substitutions and recipe_data:
+                if ai_substitutions_used < max_ai_substitutions:
+                    subs_result = await apply_user_substitutions(
+                        recipe=recipe_data,
+                        allergies=preferences.allergies or [],
+                        disliked_ingredients=preferences.disliked_ingredients or [],
+                        liked_proteins=(preferences.protein_preferences or {}).get("liked", []),
+                        disliked_proteins=(preferences.protein_preferences or {}).get("disliked", []),
+                        timeout_s=MEAL_PLAN_AI_SUBSTITUTION_TIMEOUT_S,
+                        allow_fallback=True,
+                    )
+                    ai_substitutions_used += 1
+                else:
+                    subs_result = deterministic_substitute(
+                        recipe=recipe_data,
+                        allergies=preferences.allergies or [],
+                        disliked_ingredients=preferences.disliked_ingredients or [],
+                        liked_proteins=(preferences.protein_preferences or {}).get("liked", []),
+                        disliked_proteins=(preferences.protein_preferences or {}).get("disliked", []),
+                    )
+                    subs_result["warnings"] = (subs_result.get("warnings") or []) + [
+                        "Used fast substitutions to keep plan generation responsive.",
+                    ]
+
+                recipe_data = {
+                    **(subs_result.get("modified_recipe") or recipe_data),
+                    "swaps": subs_result.get("swaps", []),
+                    "warnings": subs_result.get("warnings", []),
+                    "is_personalized": True,
+                }
+
             item = MealPlanItem(
                 meal_plan_id=meal_plan.id,
                 day_of_week=day_data["day"],
@@ -64,7 +100,7 @@ async def generate_meal_plan(
                 meal_category=meal_data.get("category", "quick"),
                 is_bulk_cook=meal_data.get("is_bulk_cook", False),
                 servings=meal_data.get("servings", preferences.household_size),
-                recipe_data=meal_data.get("recipe", {}),
+                recipe_data=recipe_data,
             )
             db.add(item)
 

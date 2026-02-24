@@ -10,14 +10,17 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, router } from 'expo-router';
+import * as Haptics from 'expo-haptics';
+import { useKeepAwake } from 'expo-keep-awake';
 import { Card } from '../../components/GradientCard';
 import { Button } from '../../components/Button';
 import { useTheme } from '../../hooks/useTheme';
-import { recipeApi } from '../../services/api';
+import { nutritionApi, recipeApi } from '../../services/api';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
 
 type Ingredient = {
@@ -37,6 +40,7 @@ type RecipeDetail = {
 };
 
 export default function CookModeScreen() {
+  useKeepAwake();
   const theme = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
 
@@ -55,6 +59,7 @@ export default function CookModeScreen() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiAnswer, setAiAnswer] = useState('');
   const [userQuestion, setUserQuestion] = useState('');
+  const [loggedCook, setLoggedCook] = useState(false);
 
   const totalSteps = recipe?.steps?.length || 1;
 
@@ -93,6 +98,7 @@ export default function CookModeScreen() {
         setTimerSeconds((s) => {
           if (s <= 1) {
             setTimerRunning(false);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             return 0;
           }
           return s - 1;
@@ -170,7 +176,16 @@ export default function CookModeScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <Text style={[styles.recipeTitle, { color: theme.text }]}>{recipe.title}</Text>
+        <View style={styles.topBar}>
+          <Text style={[styles.recipeTitle, { color: theme.text, flex: 1 }]}>{recipe.title}</Text>
+          <TouchableOpacity
+            onPress={() => router.back()}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            style={[styles.closeBtn, { backgroundColor: theme.surfaceHighlight }]}
+          >
+            <Ionicons name="close" size={20} color={theme.textSecondary} />
+          </TouchableOpacity>
+        </View>
 
         <View style={[styles.modeToggle, { backgroundColor: theme.surfaceElevated, borderColor: theme.border }]}>
           <TouchableOpacity
@@ -336,6 +351,11 @@ export default function CookModeScreen() {
               </Card>
             )}
 
+            {currentStep === recipe.steps.length - 1 ? (
+              <Text style={[styles.doneHint, { color: theme.textSecondary }]}>
+                Tap Done to log this cooked meal to Chronometer.
+              </Text>
+            ) : null}
             <View style={styles.navRow}>
               <Button
                 title="Previous"
@@ -347,7 +367,39 @@ export default function CookModeScreen() {
               <Button
                 title={currentStep === recipe.steps.length - 1 ? 'Done' : 'Next'}
                 size="sm"
-                onPress={() => onStepChange(Math.min(recipe.steps.length - 1, currentStep + 1))}
+                onPress={() => {
+                  if (currentStep < recipe.steps.length - 1) {
+                    onStepChange(Math.min(recipe.steps.length - 1, currentStep + 1));
+                    return;
+                  }
+                  Alert.alert(
+                    'Log This Meal?',
+                    'Mark this recipe as cooked and log it to your Chronometer?',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Log & Finish',
+                        onPress: async () => {
+                          if (!loggedCook) {
+                            try {
+                              await nutritionApi.createLog({
+                                source_type: 'cook_mode',
+                                source_id: recipe.id,
+                                meal_type: 'dinner',
+                                servings: 1,
+                                quantity: 1,
+                              });
+                              setLoggedCook(true);
+                            } catch (e) {
+                              console.error('cook log failed', e);
+                            }
+                          }
+                          router.back();
+                        },
+                      },
+                    ],
+                  );
+                }}
               />
             </View>
           </>
@@ -375,7 +427,9 @@ const styles = StyleSheet.create({
   progressBar: { height: 4, overflow: 'hidden' },
   progressFill: { height: '100%' },
   content: { padding: Spacing.xl, paddingBottom: Spacing.huge },
-  recipeTitle: { fontSize: FontSize.xxl, fontWeight: '800', marginBottom: Spacing.md },
+  topBar: { flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.md, gap: Spacing.sm },
+  closeBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  recipeTitle: { fontSize: FontSize.xxl, fontWeight: '800' },
   modeToggle: {
     borderWidth: 1,
     borderRadius: BorderRadius.full,
@@ -480,6 +534,10 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  doneHint: {
+    fontSize: FontSize.xs,
+    marginBottom: Spacing.sm,
   },
   navRow: { flexDirection: 'row', justifyContent: 'space-between' },
   listStepsWrap: { gap: Spacing.md },

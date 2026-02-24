@@ -8,15 +8,27 @@ import {
   Platform,
   ScrollView,
   TouchableOpacity,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as WebBrowser from 'expo-web-browser';
+import * as AuthSession from 'expo-auth-session';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import { useTheme } from '../../hooks/useTheme';
 import { Button } from '../../components/Button';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
 import { useAuthStore } from '../../stores/authStore';
 import { authApi } from '../../services/api';
+import { GOOGLE_CLIENT_ID, GOOGLE_IOS_CLIENT_ID } from '../../constants/Config';
+
+WebBrowser.maybeCompleteAuthSession();
+
+const redirectUri = AuthSession.makeRedirectUri({
+  scheme: 'wholefoodlabs',
+  path: 'auth',
+});
 
 export default function LoginScreen() {
   const theme = useTheme();
@@ -26,10 +38,109 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string; name?: string }>({});
   const { setToken, setUser } = useAuthStore();
+
+  // Google OAuth configuration
+  const [googleRequest, googleResponse, googlePromptAsync] = AuthSession.useAuthRequest(
+    {
+      clientId: Platform.OS === 'ios' ? GOOGLE_IOS_CLIENT_ID : GOOGLE_CLIENT_ID,
+      redirectUri,
+      scopes: ['profile', 'email'],
+      responseType: AuthSession.ResponseType.Token,
+    },
+    { authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth' }
+  );
+
+  // Handle Google OAuth response
+  React.useEffect(() => {
+    if (googleResponse?.type === 'success') {
+      const { access_token } = googleResponse.params;
+      handleGoogleAuth(access_token);
+    }
+  }, [googleResponse]);
+
+  const handleGoogleAuth = async (accessToken: string) => {
+    setLoading(true);
+    try {
+      // Fetch user info from Google
+      const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const userInfo = await userInfoResponse.json();
+
+      // Send to backend
+      const result = await authApi.socialAuth({
+        provider: 'google',
+        token: accessToken,
+        name: userInfo.name,
+        email: userInfo.email,
+      });
+
+      setToken(result.access_token);
+      const profile = await authApi.getProfile();
+      setUser(profile);
+      const needsOnboarding =
+        !profile?.flavor_preferences?.length || !profile?.dietary_preferences?.length;
+      router.replace((needsOnboarding ? '/(auth)/onboarding' : '/(tabs)') as any);
+    } catch (err: any) {
+      setError(err.message || 'Google sign-in failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAppleAuth = async () => {
+    setLoading(true);
+    try {
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+
+      // Apple provides name and email on first sign-in only
+      const firstName = credential.fullName?.givenName || '';
+      const lastName = credential.fullName?.familyName || '';
+      const name = `${firstName} ${lastName}`.trim() || 'Apple User';
+      const email = credential.email || `${credential.user}@privaterelay.appleid.com`;
+
+      // Send to backend
+      const result = await authApi.socialAuth({
+        provider: 'apple',
+        token: credential.identityToken || '',
+        name,
+        email,
+      });
+
+      setToken(result.access_token);
+      const profile = await authApi.getProfile();
+      setUser(profile);
+      const needsOnboarding =
+        !profile?.flavor_preferences?.length || !profile?.dietary_preferences?.length;
+      router.replace((needsOnboarding ? '/(auth)/onboarding' : '/(tabs)') as any);
+    } catch (err: any) {
+      if (err.code === 'ERR_CANCELED') {
+        // User canceled the sign-in flow
+        setLoading(false);
+        return;
+      }
+      setError(err.message || 'Apple sign-in failed');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleSubmit = async () => {
     setError('');
+    const errors: { email?: string; password?: string; name?: string } = {};
+    if (isRegister && !name.trim()) errors.name = 'Name is required';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = 'Enter a valid email address';
+    if (password.length < 8) errors.password = 'Password must be at least 8 characters';
+    setFieldErrors(errors);
+    if (Object.keys(errors).length > 0) return;
+
     setLoading(true);
     try {
       let result;
@@ -52,27 +163,29 @@ export default function LoginScreen() {
   };
 
   const handleSocialAuth = async (provider: string) => {
-    setError('');
-    setLoading(true);
-    try {
-      // Temporary social auth flow: backend issues a real JWT so protected APIs work.
-      const socialEmail = `${provider}.demo@wholefoodlabs.com`;
-      const result = await authApi.socialAuth({
-        provider,
-        token: 'dev-social-token',
-        name: provider === 'google' ? 'Google User' : 'Apple User',
-        email: socialEmail,
-      });
-      setToken(result.access_token);
-      const profile = await authApi.getProfile();
-      setUser(profile);
-      const needsOnboarding =
-        !profile?.flavor_preferences?.length || !profile?.dietary_preferences?.length;
-      router.replace((needsOnboarding ? '/(auth)/onboarding' : '/(tabs)') as any);
-    } catch (err: any) {
-      setError(err.message || 'Social sign-in failed');
-    } finally {
-      setLoading(false);
+    if (provider === 'google') {
+      // Check if Google OAuth is configured
+      const clientId = Platform.OS === 'ios' ? GOOGLE_IOS_CLIENT_ID : GOOGLE_CLIENT_ID;
+      if (clientId.includes('YOUR_DEV') || clientId.includes('YOUR_PROD')) {
+        Alert.alert(
+          'OAuth Not Configured',
+          'Google OAuth credentials are not configured. Please follow the OAUTH_SETUP.md guide to set up Google Sign-In.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      googlePromptAsync();
+    } else if (provider === 'apple') {
+      // Check if running on iOS
+      if (Platform.OS !== 'ios') {
+        Alert.alert(
+          'Not Available',
+          'Apple Sign-In is only available on iOS devices.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      await handleAppleAuth();
     }
   };
 
@@ -124,11 +237,12 @@ export default function LoginScreen() {
                   },
                 ]}
                 value={name}
-                onChangeText={setName}
+                onChangeText={(v) => { setName(v); setFieldErrors((p) => ({ ...p, name: undefined })); }}
                 placeholder="Your name"
                 placeholderTextColor={theme.textTertiary}
                 autoCapitalize="words"
               />
+              {fieldErrors.name && <Text style={[styles.fieldError, { color: theme.error }]}>{fieldErrors.name}</Text>}
             </View>
           )}
 
@@ -144,12 +258,13 @@ export default function LoginScreen() {
                 },
               ]}
               value={email}
-              onChangeText={setEmail}
+              onChangeText={(v) => { setEmail(v); setFieldErrors((p) => ({ ...p, email: undefined })); }}
               placeholder="you@example.com"
               placeholderTextColor={theme.textTertiary}
               keyboardType="email-address"
               autoCapitalize="none"
             />
+            {fieldErrors.email && <Text style={[styles.fieldError, { color: theme.error }]}>{fieldErrors.email}</Text>}
           </View>
 
           <View style={styles.inputGroup}>
@@ -164,11 +279,12 @@ export default function LoginScreen() {
                 },
               ]}
               value={password}
-              onChangeText={setPassword}
+              onChangeText={(v) => { setPassword(v); setFieldErrors((p) => ({ ...p, password: undefined })); }}
               placeholder="Enter password"
               placeholderTextColor={theme.textTertiary}
               secureTextEntry
             />
+            {fieldErrors.password && <Text style={[styles.fieldError, { color: theme.error }]}>{fieldErrors.password}</Text>}
           </View>
 
           <Button
@@ -195,14 +311,16 @@ export default function LoginScreen() {
               <Ionicons name="logo-google" size={20} color={theme.text} />
               <Text style={[styles.socialText, { color: theme.text }]}>Google</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.socialButton, { backgroundColor: theme.surfaceElevated, borderColor: theme.border }]}
-              onPress={() => handleSocialAuth('apple')}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="logo-apple" size={20} color={theme.text} />
-              <Text style={[styles.socialText, { color: theme.text }]}>Apple</Text>
-            </TouchableOpacity>
+            {Platform.OS === 'ios' && (
+              <TouchableOpacity
+                style={[styles.socialButton, { backgroundColor: theme.surfaceElevated, borderColor: theme.border }]}
+                onPress={() => handleSocialAuth('apple')}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="logo-apple" size={20} color={theme.text} />
+                <Text style={[styles.socialText, { color: theme.text }]}>Apple</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           <TouchableOpacity onPress={() => setIsRegister(!isRegister)} style={styles.toggleAuth}>
@@ -262,6 +380,11 @@ const styles = StyleSheet.create({
   errorText: {
     fontSize: FontSize.sm,
     fontWeight: '500',
+  },
+  fieldError: {
+    fontSize: FontSize.xs,
+    fontWeight: '500',
+    marginTop: 2,
   },
   inputGroup: {
     gap: Spacing.xs + 2,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,8 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
+  RefreshControl,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -39,17 +41,33 @@ export default function ProfileScreen() {
   const [activeTab, setActiveTab] = useState<'stats' | 'achievements'>('stats');
   const [achievements, setAchievements] = useState<Achievement[]>([]);
   const [loadingAchievements, setLoadingAchievements] = useState(false);
+  const [achievementsError, setAchievementsError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const xp = user?.xp_points || 0;
   const level = Math.floor(xp / XP_PER_LEVEL) + 1;
 
+  const loadAchievements = async () => {
+    setLoadingAchievements(true);
+    setAchievementsError(false);
+    try {
+      const data = await gameApi.getAchievements();
+      setAchievements(data || []);
+    } catch {
+      setAchievementsError(true);
+    } finally {
+      setLoadingAchievements(false);
+    }
+  };
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadAchievements();
+    setRefreshing(false);
+  }, []);
+
   useEffect(() => {
     if (activeTab === 'achievements' && achievements.length === 0) {
-      setLoadingAchievements(true);
-      gameApi
-        .getAchievements()
-        .then((data) => setAchievements(data || []))
-        .catch(() => {})
-        .finally(() => setLoadingAchievements(false));
+      loadAchievements();
     }
   }, [activeTab]);
 
@@ -63,7 +81,11 @@ export default function ProfileScreen() {
 
   return (
     <ScreenContainer>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scroll}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.primary} />}
+      >
         {/* Profile Header */}
         <View style={styles.profileHeader}>
           <LinearGradient colors={theme.gradient.hero} style={styles.avatar}>
@@ -171,16 +193,72 @@ export default function ProfileScreen() {
             <Text style={[styles.sectionTitle, { color: theme.text, marginTop: Spacing.xl }]}>
               Preferences
             </Text>
+            <TouchableOpacity
+              activeOpacity={0.75}
+              style={[styles.settingsRow, { borderBottomColor: theme.border }]}
+              onPress={() => router.push('/saved')}
+            >
+              <View style={[styles.settingsIcon, { backgroundColor: theme.primaryMuted }]}>
+                <Ionicons name="bookmark" size={18} color={theme.primary} />
+              </View>
+              <View style={styles.settingsInfo}>
+                <Text style={[styles.settingsLabel, { color: theme.text }]}>Saved Recipes</Text>
+                <Text style={[styles.settingsDesc, { color: theme.textTertiary }]} numberOfLines={1}>
+                  View all recipes you bookmarked
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={theme.textTertiary} />
+            </TouchableOpacity>
+
             {[
-              { icon: 'nutrition' as const, label: 'Dietary Preferences', desc: user?.dietary_preferences?.join(', ') || 'Not set' },
-              { icon: 'flame' as const, label: 'Flavor Profile', desc: user?.flavor_preferences?.join(', ') || 'Not set' },
-              { icon: 'alert-circle' as const, label: 'Allergies', desc: user?.allergies?.join(', ') || 'None' },
-              { icon: 'people' as const, label: 'Household Size', desc: `${user?.household_size || 1} person(s)` },
+              {
+                icon: 'nutrition' as const,
+                label: 'Dietary Preferences',
+                desc: user?.dietary_preferences?.join(', ') || 'Not set',
+                section: 'dietary',
+              },
+              {
+                icon: 'flame' as const,
+                label: 'Flavor Profile',
+                desc: user?.flavor_preferences?.join(', ') || 'Not set',
+                section: 'flavor',
+              },
+              {
+                icon: 'alert-circle' as const,
+                label: 'Allergies',
+                desc: user?.allergies?.join(', ') || 'None',
+                section: 'allergies',
+              },
+              {
+                icon: 'close-circle' as const,
+                label: 'Disliked Ingredients',
+                desc: user?.disliked_ingredients?.join(', ') || 'None',
+                section: 'disliked',
+              },
+              {
+                icon: 'restaurant' as const,
+                label: 'Liked Proteins',
+                desc: user?.protein_preferences?.liked?.join(', ') || 'Not set',
+                section: 'liked_proteins',
+              },
+              {
+                icon: 'remove-circle' as const,
+                label: 'Proteins to Avoid',
+                desc: user?.protein_preferences?.disliked?.join(', ') || 'None',
+                section: 'disliked_proteins',
+              },
+              {
+                icon: 'people' as const,
+                label: 'Household Size',
+                desc: `${user?.household_size || 1} person(s)`,
+                section: 'household',
+              },
             ].map((item, index) => (
               <TouchableOpacity
                 key={index}
                 activeOpacity={0.7}
                 style={[styles.settingsRow, { borderBottomColor: theme.border }]}
+                onPress={() => router.push({ pathname: '/preferences', params: { section: item.section } })}
               >
                 <View style={[styles.settingsIcon, { backgroundColor: theme.primaryMuted }]}>
                   <Ionicons name={item.icon} size={18} color={theme.primary} />
@@ -251,10 +329,26 @@ export default function ProfileScreen() {
                 ))}
                 {achievements.length === 0 && !loadingAchievements && (
                   <View style={styles.emptyState}>
-                    <Ionicons name="trophy-outline" size={48} color={theme.textTertiary} />
+                    <Ionicons name={achievementsError ? 'cloud-offline-outline' : 'trophy-outline'} size={48} color={theme.textTertiary} />
                     <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
-                      Achievements loading...
+                      {achievementsError ? 'Unable to load achievements' : 'No achievements yet. Keep exploring!'}
                     </Text>
+                    {achievementsError && (
+                      <TouchableOpacity
+                        onPress={() => {
+                          setAchievementsError(false);
+                          setLoadingAchievements(true);
+                          gameApi
+                            .getAchievements()
+                            .then((data) => setAchievements(data || []))
+                            .catch(() => setAchievementsError(true))
+                            .finally(() => setLoadingAchievements(false));
+                        }}
+                        style={{ backgroundColor: theme.primaryMuted, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm, borderRadius: BorderRadius.full }}
+                      >
+                        <Text style={{ color: theme.primary, fontSize: FontSize.sm, fontWeight: '700' }}>Retry</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 )}
               </View>
@@ -267,8 +361,17 @@ export default function ProfileScreen() {
           title="Sign Out"
           variant="ghost"
           onPress={() => {
-            logout();
-            router.replace('/(auth)/login');
+            Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Sign Out',
+                style: 'destructive',
+                onPress: () => {
+                  logout();
+                  router.replace('/(auth)/login');
+                },
+              },
+            ]);
           }}
           style={{ marginTop: Spacing.xxxl, marginBottom: Spacing.huge }}
         />

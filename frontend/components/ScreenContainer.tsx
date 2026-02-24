@@ -2,7 +2,9 @@ import React from 'react';
 import { View, StyleSheet, StatusBar, ViewStyle } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../hooks/useTheme';
+import { useThemeStore } from '../stores/themeStore';
 import { Spacing } from '../constants/Colors';
+import { useColorScheme } from 'react-native';
 
 interface ScreenContainerProps {
   children: React.ReactNode;
@@ -18,6 +20,10 @@ export function ScreenContainer({
   safeArea = true,
 }: ScreenContainerProps) {
   const theme = useTheme();
+  const mode = useThemeStore((s) => s.mode);
+  const systemScheme = useColorScheme();
+  const effectiveScheme = mode === 'system' ? systemScheme || 'dark' : mode;
+  const barStyle = effectiveScheme === 'light' ? 'dark-content' : 'light-content';
 
   const Container = safeArea ? SafeAreaView : View;
 
@@ -30,7 +36,7 @@ export function ScreenContainer({
         style,
       ]}
     >
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle={barStyle} />
       {children}
     </Container>
   );

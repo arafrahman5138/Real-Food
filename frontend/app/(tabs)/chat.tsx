@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import {
   Alert,
   Animated,
@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { router } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenContainer } from '../../components/ScreenContainer';
@@ -23,6 +24,16 @@ import { useGamificationStore } from '../../stores/gamificationStore';
 import { useAuthStore } from '../../stores/authStore';
 import { chatApi } from '../../services/api';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
+import {
+  type RecipeIngredient,
+  type RecipeData,
+  type NormalizedAssistantPayload,
+  type RecipeDraft,
+  normalizeAssistantPayload,
+  parseIngredientLine,
+  recipeKeyFor,
+  toStringValue,
+} from '../../utils/chatParser';
 
 const SUGGESTIONS = [
   'Mac and Cheese',
@@ -34,139 +45,6 @@ const SUGGESTIONS = [
   'Ramen Noodles',
   'Pancakes',
 ];
-
-type RecipeIngredient = {
-  name: string;
-  quantity?: string | number;
-  unit?: string;
-};
-
-type RecipeData = {
-  title: string;
-  description?: string;
-  ingredients: RecipeIngredient[];
-  steps: string[];
-  prep_time_min?: number;
-  cook_time_min?: number;
-  servings?: number;
-};
-
-type NormalizedAssistantPayload = {
-  message: string;
-  recipe: RecipeData | null;
-  swaps?: any[];
-  nutrition?: any;
-};
-
-type RecipeDraft = {
-  title: string;
-  description: string;
-  servings: string;
-  prepTime: string;
-  cookTime: string;
-  ingredientsText: string;
-  stepsText: string;
-};
-
-function toStringValue(value: unknown): string {
-  if (value == null) return '';
-  return String(value);
-}
-
-function extractJsonObject(text: string): any | null {
-  const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = (codeBlockMatch?.[1] || text).trim();
-
-  try {
-    return JSON.parse(candidate);
-  } catch {}
-
-  const start = candidate.indexOf('{');
-  const end = candidate.lastIndexOf('}');
-  if (start !== -1 && end !== -1 && end > start) {
-    const sliced = candidate.slice(start, end + 1);
-    try {
-      return JSON.parse(sliced);
-    } catch {}
-  }
-  return null;
-}
-
-function toRecipeData(input: any): RecipeData | null {
-  if (!input || typeof input !== 'object') return null;
-  const ingredients = Array.isArray(input.ingredients) ? input.ingredients : [];
-  const steps = Array.isArray(input.steps) ? input.steps : [];
-
-  return {
-    title: toStringValue(input.title || 'Healthified Recipe'),
-    description: toStringValue(input.description || ''),
-    ingredients: ingredients.map((ing: any) => ({
-      name: toStringValue(ing?.name),
-      quantity: ing?.quantity ?? '',
-      unit: toStringValue(ing?.unit || ''),
-    })),
-    steps: steps.map((step: any) => toStringValue(step)).filter(Boolean),
-    prep_time_min: Number.isFinite(Number(input.prep_time_min))
-      ? Number(input.prep_time_min)
-      : undefined,
-    cook_time_min: Number.isFinite(Number(input.cook_time_min))
-      ? Number(input.cook_time_min)
-      : undefined,
-    servings: Number.isFinite(Number(input.servings))
-      ? Number(input.servings)
-      : undefined,
-  };
-}
-
-function normalizeAssistantPayload(msg: {
-  content: string;
-  recipe?: any;
-  swaps?: any[];
-  nutrition?: any;
-}): NormalizedAssistantPayload {
-  if (msg.recipe) {
-    return {
-      message: msg.content,
-      recipe: toRecipeData(msg.recipe),
-      swaps: msg.swaps,
-      nutrition: msg.nutrition,
-    };
-  }
-
-  const parsed = extractJsonObject(msg.content);
-  if (parsed && typeof parsed === 'object') {
-    return {
-      message: toStringValue(parsed.message || ''),
-      recipe: toRecipeData(parsed.recipe),
-      swaps: Array.isArray(parsed.swaps) ? parsed.swaps : undefined,
-      nutrition: parsed.nutrition,
-    };
-  }
-
-  return {
-    message: msg.content,
-    recipe: null,
-    swaps: msg.swaps,
-    nutrition: msg.nutrition,
-  };
-}
-
-function parseIngredientLine(line: string): RecipeIngredient {
-  const trimmed = line.trim();
-  if (!trimmed) return { name: '' };
-  const tokens = trimmed.split(/\s+/);
-  if (tokens.length === 1) return { name: trimmed };
-  if (tokens.length === 2) return { quantity: tokens[0], name: tokens[1] };
-  return {
-    quantity: tokens[0],
-    unit: tokens[1],
-    name: tokens.slice(2).join(' '),
-  };
-}
-
-function recipeKeyFor(index: number): string {
-  return `message-recipe-${index}`;
-}
 
 export default function ChatScreen() {
   const theme = useTheme();
@@ -189,12 +67,21 @@ export default function ChatScreen() {
     setLoading,
     setStreamingText,
   } = useChatStore();
+  const clearChat = useChatStore((s) => s.clearChat);
+  const loadLastSession = useChatStore((s) => s.loadLastSession);
   const savedRecipes = useSavedRecipesStore((s) => s.recipes);
   const completeAction = useGamificationStore((s) => s.completeAction);
   const addXp = useAuthStore((s) => s.addXp);
   const saveRecipe = useSavedRecipesStore((s) => s.saveRecipe);
+  const saveGeneratedRecipe = useSavedRecipesStore((s) => s.saveGeneratedRecipe);
   const removeRecipe = useSavedRecipesStore((s) => s.removeRecipe);
   const isSavedRecipe = useSavedRecipesStore((s) => s.isSaved);
+  const fetchSaved = useSavedRecipesStore((s) => s.fetchSaved);
+
+  useEffect(() => {
+    fetchSaved();
+    loadLastSession();
+  }, [fetchSaved]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -239,12 +126,54 @@ export default function ChatScreen() {
       setLoading(false);
       setStreamingText('');
     }
-
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
   };
 
   const handleSuggestion = (suggestion: string) => {
     setInput(suggestion);
+    // Auto-send after a microtask to let state update
+    setTimeout(() => {
+      const userMessage = suggestion.trim();
+      if (!userMessage || isLoading) return;
+      setInput('');
+      addMessage({ role: 'user', content: userMessage });
+      setLoading(true);
+      setStreamingText('');
+
+      chatApi.healthify(userMessage, sessionId || undefined)
+        .then((response) => {
+          if (response.session_id) setSessionId(response.session_id);
+          const normalized = normalizeAssistantPayload({
+            content: response.message?.content || response.message || '',
+            recipe: response.healthified_recipe,
+            swaps: response.ingredient_swaps,
+            nutrition: response.nutrition_comparison,
+          });
+          addMessage({
+            role: 'assistant',
+            content: normalized.message,
+            recipe: normalized.recipe,
+            swaps: normalized.swaps,
+            nutrition: normalized.nutrition,
+          });
+          const questResult = completeAction('healthify');
+          if (questResult.gainedXp > 0) {
+            addXp(questResult.gainedXp);
+            showQuestToast(`Quest complete · +${questResult.gainedXp} XP`);
+          }
+        })
+        .catch((err: any) => {
+          const rawMessage = String(err?.message || '');
+          const friendlyMessage =
+            /quota|rate.?limit|resourceexhausted|429/i.test(rawMessage)
+              ? "The AI provider quota is currently exceeded. Please try again later, or switch the backend LLM provider/API key."
+              : rawMessage || "I couldn't reach Healthify right now. Please try again in a moment.";
+          addMessage({ role: 'assistant', content: friendlyMessage });
+        })
+        .finally(() => {
+          setLoading(false);
+          setStreamingText('');
+        });
+    }, 0);
   };
 
   const startRecipeEdit = (key: string, recipe: RecipeData) => {
@@ -294,13 +223,22 @@ export default function ChatScreen() {
     Alert.alert('Recipe updated', 'Your custom version is ready.');
   };
 
-  const toggleSaveRecipe = (id: string, recipe: RecipeData) => {
-    if (isSavedRecipe(id)) {
-      removeRecipe(id);
+  const toggleSaveRecipe = async (key: string, recipe: RecipeData) => {
+    const recipeId = recipe.id;
+
+    if (recipeId && isSavedRecipe(recipeId)) {
+      await removeRecipe(recipeId);
+      Alert.alert('Removed', 'Recipe removed from your saved list.');
       return;
     }
-    saveRecipe({
-      id,
+
+    if (recipeId) {
+      await saveRecipe(recipeId);
+      Alert.alert('Saved', 'Recipe added to your saved list.');
+      return;
+    }
+
+    const createdId = await saveGeneratedRecipe({
       title: recipe.title,
       description: recipe.description,
       ingredients: recipe.ingredients,
@@ -309,7 +247,17 @@ export default function ChatScreen() {
       prep_time_min: recipe.prep_time_min,
       cook_time_min: recipe.cook_time_min,
     });
-    Alert.alert('Saved', 'Recipe added to your saved list.');
+
+    if (createdId) {
+      setRecipeOverrides((prev) => ({
+        ...prev,
+        [key]: { ...recipe, id: createdId },
+      }));
+      Alert.alert('Saved', 'Recipe added to your saved list.');
+      return;
+    }
+
+    Alert.alert('Save failed', 'Unable to save recipe right now. Please try again.');
   };
 
   const showQuestToast = (message: string) => {
@@ -356,16 +304,16 @@ export default function ChatScreen() {
             >
               <Ionicons name="sparkles" size={18} color="#FFFFFF" />
             </LinearGradient>
-            <View>
+            <View style={styles.headerTextWrap}>
               <Text style={[styles.headerTitle, { color: theme.text }]}>Healthify</Text>
-              <Text style={[styles.headerSubtitle, { color: theme.textTertiary }]}>
+              <Text style={[styles.headerSubtitle, { color: theme.textTertiary }]} numberOfLines={1}>
                 Transform any food into a whole-food version
               </Text>
             </View>
           </View>
           <TouchableOpacity
             style={[styles.savedPill, { backgroundColor: theme.surfaceElevated, borderColor: theme.border }]}
-            onPress={() => setShowSavedRecipes((prev) => !prev)}
+            onPress={() => router.push('/saved')}
             activeOpacity={0.75}
           >
             <Ionicons name="bookmark" size={14} color={theme.primary} />
@@ -373,6 +321,16 @@ export default function ChatScreen() {
               Saved {savedRecipes.length}
             </Text>
           </TouchableOpacity>
+          {messages.length > 0 && (
+            <TouchableOpacity
+              style={[styles.savedPill, { backgroundColor: theme.surfaceElevated, borderColor: theme.border, marginLeft: Spacing.xs }]}
+              onPress={clearChat}
+              activeOpacity={0.75}
+            >
+              <Ionicons name="add" size={14} color={theme.primary} />
+              <Text style={[styles.savedPillText, { color: theme.text }]}>New</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         {questToast ? (
@@ -405,6 +363,7 @@ export default function ChatScreen() {
           style={styles.messages}
           contentContainerStyle={styles.messagesContent}
           showsVerticalScrollIndicator={false}
+          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
         >
           {showSavedRecipes && savedRecipes.length > 0 && (
             <Card style={styles.savedListCard} padding={Spacing.md}>
@@ -414,7 +373,7 @@ export default function ChatScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.savedTitle, { color: theme.text }]}>{saved.title}</Text>
                     <Text style={[styles.savedMeta, { color: theme.textTertiary }]}>
-                      {saved.ingredients.length} ingredients
+                      {(saved.ingredients || []).length} ingredients
                       {saved.servings ? ` • ${saved.servings} servings` : ''}
                     </Text>
                   </View>
@@ -466,7 +425,7 @@ export default function ChatScreen() {
               const key = recipeKeyFor(index);
               const recipe = payload?.recipe ? recipeOverrides[key] || payload.recipe : null;
               const isEditing = editingKey === key;
-              const isSaved = recipe ? isSavedRecipe(key) : false;
+              const isSaved = recipe?.id ? isSavedRecipe(recipe.id) : false;
               const ingredientState = checkedIngredients[key] || [];
 
               return (
@@ -789,7 +748,7 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     borderBottomWidth: 1,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
   },
   headerContent: {
@@ -797,6 +756,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.md,
     flex: 1,
+    minWidth: 0,
+    paddingRight: Spacing.sm,
+  },
+  headerTextWrap: {
+    flex: 1,
+    minWidth: 0,
   },
   savedPill: {
     flexDirection: 'row',

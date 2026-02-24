@@ -7,10 +7,16 @@ import { ChipSelector } from '../../components/ChipSelector';
 import { useTheme } from '../../hooks/useTheme';
 import { useAuthStore } from '../../stores/authStore';
 import { authApi } from '../../services/api';
-import { ALLERGY_OPTIONS, DIETARY_OPTIONS, FLAVOR_OPTIONS } from '../../constants/Config';
+import {
+  ALLERGY_OPTIONS,
+  DIETARY_OPTIONS,
+  DISLIKED_INGREDIENT_OPTIONS,
+  FLAVOR_OPTIONS,
+  PROTEIN_OPTIONS,
+} from '../../constants/Config';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
 
-type Step = 0 | 1 | 2;
+type Step = 0 | 1 | 2 | 3 | 4;
 
 export default function OnboardingScreen() {
   const theme = useTheme();
@@ -24,17 +30,30 @@ export default function OnboardingScreen() {
   const [flavors, setFlavors] = useState<string[]>(user?.flavor_preferences || []);
   const [dietary, setDietary] = useState<string[]>(user?.dietary_preferences || []);
   const [allergies, setAllergies] = useState<string[]>(user?.allergies || []);
+  const [dislikedIngredients, setDislikedIngredients] = useState<string[]>(
+    user?.disliked_ingredients || []
+  );
+  const [likedProteins, setLikedProteins] = useState<string[]>(
+    user?.protein_preferences?.liked || []
+  );
+  const [dislikedProteins, setDislikedProteins] = useState<string[]>(
+    user?.protein_preferences?.disliked || []
+  );
 
   const title = useMemo(() => {
     if (step === 0) return 'Let\'s tune your flavor profile';
     if (step === 1) return 'Any dietary goals or restrictions?';
-    return 'Final check: allergies';
+    if (step === 2) return 'Final safety check: allergies';
+    if (step === 3) return 'Any ingredients you dislike?';
+    return 'Protein preferences';
   }, [step]);
 
   const subtitle = useMemo(() => {
     if (step === 0) return 'Pick 2–4 flavors so meal plans feel personal.';
     if (step === 1) return 'Choose what applies now. You can edit later in Profile.';
-    return 'We’ll use this to keep recommendations safe.';
+    if (step === 2) return 'We’ll use this to keep recommendations safe.';
+    if (step === 3) return 'We can avoid these in meal plans and suggest substitutions.';
+    return 'Choose proteins you like and those you want less often.';
   }, [step]);
 
   const toggle = (arr: string[], setter: (next: string[]) => void, id: string) => {
@@ -44,7 +63,24 @@ export default function OnboardingScreen() {
   const canContinue =
     (step === 0 && flavors.length > 0) ||
     (step === 1 && dietary.length > 0) ||
-    step === 2;
+    step >= 2;
+
+  const toggleProtein = (
+    arr: string[],
+    setter: (next: string[]) => void,
+    otherArr: string[],
+    otherSetter: (next: string[]) => void,
+    id: string
+  ) => {
+    if (arr.includes(id)) {
+      setter(arr.filter((x) => x !== id));
+      return;
+    }
+    setter([...arr, id]);
+    if (otherArr.includes(id)) {
+      otherSetter(otherArr.filter((x) => x !== id));
+    }
+  };
 
   const finishOnboarding = async () => {
     setLoading(true);
@@ -54,6 +90,11 @@ export default function OnboardingScreen() {
         flavor_preferences: flavors,
         dietary_preferences: dietary,
         allergies,
+        disliked_ingredients: dislikedIngredients,
+        protein_preferences: {
+          liked: likedProteins,
+          disliked: dislikedProteins,
+        },
       });
       const profile = await authApi.getProfile();
       setUser(profile);
@@ -80,7 +121,7 @@ export default function OnboardingScreen() {
           <View
             style={[
               styles.progressFill,
-              { backgroundColor: theme.primary, width: `${((step + 1) / 3) * 100}%` },
+              { backgroundColor: theme.primary, width: `${((step + 1) / 5) * 100}%` },
             ]}
           />
         </View>
@@ -117,6 +158,36 @@ export default function OnboardingScreen() {
             onToggle={(id) => toggle(allergies, setAllergies, id)}
           />
         )}
+
+        {step === 3 && (
+          <ChipSelector
+            label="Disliked ingredients"
+            options={DISLIKED_INGREDIENT_OPTIONS}
+            selected={dislikedIngredients}
+            onToggle={(id) => toggle(dislikedIngredients, setDislikedIngredients, id)}
+          />
+        )}
+
+        {step === 4 && (
+          <>
+            <ChipSelector
+              label="Proteins you like"
+              options={PROTEIN_OPTIONS}
+              selected={likedProteins}
+              onToggle={(id) =>
+                toggleProtein(likedProteins, setLikedProteins, dislikedProteins, setDislikedProteins, id)
+              }
+            />
+            <ChipSelector
+              label="Proteins to avoid"
+              options={PROTEIN_OPTIONS}
+              selected={dislikedProteins}
+              onToggle={(id) =>
+                toggleProtein(dislikedProteins, setDislikedProteins, likedProteins, setLikedProteins, id)
+              }
+            />
+          </>
+        )}
       </ScrollView>
 
       <View style={[styles.footer, { borderTopColor: theme.border, backgroundColor: theme.surface }]}> 
@@ -126,10 +197,10 @@ export default function OnboardingScreen() {
           onPress={() => setStep((s) => (s === 0 ? 0 : ((s - 1) as Step)))}
           disabled={step === 0 || loading}
         />
-        {step < 2 ? (
+        {step < 4 ? (
           <Button
             title="Continue"
-            onPress={() => setStep((s) => (s === 2 ? 2 : ((s + 1) as Step)))}
+            onPress={() => setStep((s) => (s === 4 ? 4 : ((s + 1) as Step)))}
             disabled={!canContinue || loading}
           />
         ) : (

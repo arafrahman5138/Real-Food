@@ -10,6 +10,11 @@ export interface SavedRecipe {
   total_time_min?: number;
   health_benefits?: string[];
   nutrition_info?: Record<string, number>;
+  ingredients?: Array<{ name: string; quantity?: string | number; unit?: string }>;
+  steps?: string[];
+  servings?: number;
+  prep_time_min?: number;
+  cook_time_min?: number;
 }
 
 interface SavedRecipesState {
@@ -18,6 +23,7 @@ interface SavedRecipesState {
   loading: boolean;
   fetchSaved: () => Promise<void>;
   saveRecipe: (id: string) => Promise<any>;
+  saveGeneratedRecipe: (recipe: Omit<SavedRecipe, 'id'> & { id?: string }) => Promise<string | null>;
   removeRecipe: (id: string) => Promise<void>;
   isSaved: (id: string) => boolean;
 }
@@ -54,6 +60,28 @@ export const useSavedRecipesStore = create<SavedRecipesState>((set, get) => ({
         next.delete(id);
         return { savedIds: next };
       });
+    }
+  },
+
+  saveGeneratedRecipe: async (recipe) => {
+    try {
+      const result = await recipeApi.saveGenerated({
+        title: recipe.title,
+        description: recipe.description,
+        ingredients: recipe.ingredients || [],
+        steps: recipe.steps || [],
+        servings: recipe.servings,
+        prep_time_min: recipe.prep_time_min,
+        cook_time_min: recipe.cook_time_min,
+        difficulty: recipe.difficulty,
+        cuisine: recipe.cuisine,
+        health_benefits: recipe.health_benefits,
+        nutrition_info: recipe.nutrition_info,
+      });
+      await get().fetchSaved();
+      return result?.recipe_id || null;
+    } catch {
+      return null;
     }
   },
 

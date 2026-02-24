@@ -8,6 +8,8 @@ settings = get_settings()
 connect_args = {}
 if settings.database_url.startswith("sqlite"):
     connect_args["check_same_thread"] = False
+    # Give SQLite time to resolve short-lived write locks during startup/seed.
+    connect_args["timeout"] = 30
 
 engine = create_engine(settings.database_url, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -81,6 +83,20 @@ def _migrate_add_columns():
             """)
             conn.execute("CREATE INDEX ix_saved_recipes_user_id ON saved_recipes(user_id)")
             conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+    try:
+        conn = sqlite3.connect(db_path)
+        user_cols = [row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()]
+        if "liked_ingredients" not in user_cols:
+            conn.execute('ALTER TABLE users ADD COLUMN liked_ingredients TEXT DEFAULT "[]"')
+        if "disliked_ingredients" not in user_cols:
+            conn.execute('ALTER TABLE users ADD COLUMN disliked_ingredients TEXT DEFAULT "[]"')
+        if "protein_preferences" not in user_cols:
+            conn.execute('ALTER TABLE users ADD COLUMN protein_preferences TEXT DEFAULT "{}"')
+        conn.commit()
         conn.close()
     except Exception:
         pass

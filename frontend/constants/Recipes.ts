@@ -1,0 +1,20 @@
+/** Emoji flags / icons keyed by cuisine slug — single source of truth. */
+export const CUISINE_EMOJI: Record<string, string> = {
+  indian: '🇮🇳',
+  thai: '🇹🇭',
+  korean: '🇰🇷',
+  mexican: '🇲🇽',
+  ethiopian: '🇪🇹',
+  middle_eastern: '🕌',
+  west_african: '🌍',
+  caribbean: '🏝️',
+  japanese: '🇯🇵',
+  chinese: '🇨🇳',
+  vietnamese: '🇻🇳',
+  moroccan: '🇲🇦',
+  indonesian: '🇮🇩',
+  peruvian: '🇵🇪',
+  mediterranean: '🫒',
+  turkish: '🇹🇷',
+  american: '🇺🇸',
+};

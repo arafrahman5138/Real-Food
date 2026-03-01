@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Optional
 import bcrypt
+import secrets
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -30,6 +31,32 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=settings.access_token_expire_minutes))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
+
+
+def create_refresh_token(data: dict) -> str:
+    """Create a long-lived refresh token (default 365 days)."""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(days=settings.refresh_token_expire_days)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
+
+
+def verify_refresh_token(token: str) -> Optional[str]:
+    """Verify a refresh token and return the user_id, or None if invalid."""
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        if payload.get("type") != "refresh":
+            return None
+        return payload.get("sub")
+    except JWTError:
+        return None
+
+
+def create_token_pair(user_id: str) -> dict:
+    """Create both access and refresh tokens for a user."""
+    access = create_access_token(data={"sub": user_id})
+    refresh = create_refresh_token(data={"sub": user_id})
+    return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
 
 
 async def get_current_user(

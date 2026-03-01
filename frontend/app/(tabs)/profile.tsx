@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   RefreshControl,
-  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,10 +15,8 @@ import { ScreenContainer } from '../../components/ScreenContainer';
 import { Card } from '../../components/GradientCard';
 import { XPBar } from '../../components/XPBar';
 import { StreakBadge } from '../../components/StreakBadge';
-import { Button } from '../../components/Button';
 import { useTheme } from '../../hooks/useTheme';
 import { useAuthStore } from '../../stores/authStore';
-import { useThemeStore } from '../../stores/themeStore';
 import { gameApi } from '../../services/api';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
 import { XP_PER_LEVEL } from '../../constants/Config';
@@ -36,8 +33,7 @@ interface Achievement {
 
 export default function ProfileScreen() {
   const theme = useTheme();
-  const { user, logout } = useAuthStore();
-  const { mode, setMode } = useThemeStore();
+  const user = useAuthStore((s) => s.user);
   const [activeTab, setActiveTab] = useState<'stats' | 'achievements'>('stats');
   const [achievements, setAchievements] = useState<Achievement[]>([]);
   const [loadingAchievements, setLoadingAchievements] = useState(false);
@@ -73,12 +69,6 @@ export default function ProfileScreen() {
 
   const unlockedCount = achievements.filter((a) => a.unlocked).length;
 
-  const themeOptions: { id: 'system' | 'light' | 'dark'; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-    { id: 'system', label: 'System', icon: 'phone-portrait' },
-    { id: 'light', label: 'Light', icon: 'sunny' },
-    { id: 'dark', label: 'Dark', icon: 'moon' },
-  ];
-
   return (
     <ScreenContainer>
       <ScrollView
@@ -86,6 +76,26 @@ export default function ProfileScreen() {
         contentContainerStyle={styles.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.primary} />}
       >
+        {/* ── Top Bar ─────────────────────────────────────────── */}
+        <View style={styles.topBar}>
+          <TouchableOpacity
+            onPress={() => router.back()}
+            activeOpacity={0.7}
+            style={[styles.topBarBtn, { backgroundColor: theme.surfaceElevated }]}
+            hitSlop={8}
+          >
+            <Ionicons name="chevron-back" size={20} color={theme.text} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => router.push('/settings' as any)}
+            activeOpacity={0.7}
+            style={[styles.topBarBtn, { backgroundColor: theme.surfaceElevated }]}
+            hitSlop={8}
+          >
+            <Ionicons name="settings-outline" size={20} color={theme.text} />
+          </TouchableOpacity>
+        </View>
+
         {/* Profile Header */}
         <View style={styles.profileHeader}>
           <LinearGradient colors={theme.gradient.hero} style={styles.avatar}>
@@ -158,120 +168,6 @@ export default function ProfileScreen() {
                 <Text style={[styles.statLabel, { color: theme.textTertiary }]}>Achievements</Text>
               </Card>
             </View>
-
-            {/* Theme Selector */}
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>Appearance</Text>
-            <View style={[styles.themeRow, { backgroundColor: theme.surfaceElevated, borderRadius: BorderRadius.md }]}>
-              {themeOptions.map((opt) => (
-                <TouchableOpacity
-                  key={opt.id}
-                  onPress={() => setMode(opt.id)}
-                  activeOpacity={0.7}
-                  style={[
-                    styles.themeOption,
-                    mode === opt.id && { backgroundColor: theme.primary },
-                  ]}
-                >
-                  <Ionicons
-                    name={opt.icon}
-                    size={16}
-                    color={mode === opt.id ? '#FFFFFF' : theme.textSecondary}
-                  />
-                  <Text
-                    style={[
-                      styles.themeOptionText,
-                      { color: mode === opt.id ? '#FFFFFF' : theme.textSecondary },
-                    ]}
-                  >
-                    {opt.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            {/* Preferences */}
-            <Text style={[styles.sectionTitle, { color: theme.text, marginTop: Spacing.xl }]}>
-              Preferences
-            </Text>
-            <TouchableOpacity
-              activeOpacity={0.75}
-              style={[styles.settingsRow, { borderBottomColor: theme.border }]}
-              onPress={() => router.push('/saved')}
-            >
-              <View style={[styles.settingsIcon, { backgroundColor: theme.primaryMuted }]}>
-                <Ionicons name="bookmark" size={18} color={theme.primary} />
-              </View>
-              <View style={styles.settingsInfo}>
-                <Text style={[styles.settingsLabel, { color: theme.text }]}>Saved Recipes</Text>
-                <Text style={[styles.settingsDesc, { color: theme.textTertiary }]} numberOfLines={1}>
-                  View all recipes you bookmarked
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={theme.textTertiary} />
-            </TouchableOpacity>
-
-            {[
-              {
-                icon: 'nutrition' as const,
-                label: 'Dietary Preferences',
-                desc: user?.dietary_preferences?.join(', ') || 'Not set',
-                section: 'dietary',
-              },
-              {
-                icon: 'flame' as const,
-                label: 'Flavor Profile',
-                desc: user?.flavor_preferences?.join(', ') || 'Not set',
-                section: 'flavor',
-              },
-              {
-                icon: 'alert-circle' as const,
-                label: 'Allergies',
-                desc: user?.allergies?.join(', ') || 'None',
-                section: 'allergies',
-              },
-              {
-                icon: 'close-circle' as const,
-                label: 'Disliked Ingredients',
-                desc: user?.disliked_ingredients?.join(', ') || 'None',
-                section: 'disliked',
-              },
-              {
-                icon: 'restaurant' as const,
-                label: 'Liked Proteins',
-                desc: user?.protein_preferences?.liked?.join(', ') || 'Not set',
-                section: 'liked_proteins',
-              },
-              {
-                icon: 'remove-circle' as const,
-                label: 'Proteins to Avoid',
-                desc: user?.protein_preferences?.disliked?.join(', ') || 'None',
-                section: 'disliked_proteins',
-              },
-              {
-                icon: 'people' as const,
-                label: 'Household Size',
-                desc: `${user?.household_size || 1} person(s)`,
-                section: 'household',
-              },
-            ].map((item, index) => (
-              <TouchableOpacity
-                key={index}
-                activeOpacity={0.7}
-                style={[styles.settingsRow, { borderBottomColor: theme.border }]}
-                onPress={() => router.push({ pathname: '/preferences', params: { section: item.section } })}
-              >
-                <View style={[styles.settingsIcon, { backgroundColor: theme.primaryMuted }]}>
-                  <Ionicons name={item.icon} size={18} color={theme.primary} />
-                </View>
-                <View style={styles.settingsInfo}>
-                  <Text style={[styles.settingsLabel, { color: theme.text }]}>{item.label}</Text>
-                  <Text style={[styles.settingsDesc, { color: theme.textTertiary }]} numberOfLines={1}>
-                    {item.desc}
-                  </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={18} color={theme.textTertiary} />
-              </TouchableOpacity>
-            ))}
           </>
         ) : (
           <>
@@ -281,100 +177,97 @@ export default function ProfileScreen() {
                 color={theme.primary}
                 style={{ marginTop: Spacing.huge }}
               />
+            ) : achievements.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Ionicons name={achievementsError ? 'cloud-offline-outline' : 'trophy-outline'} size={48} color={theme.textTertiary} />
+                <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
+                  {achievementsError ? 'Unable to load achievements' : 'No achievements yet. Keep exploring!'}
+                </Text>
+                {achievementsError && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      setAchievementsError(false);
+                      setLoadingAchievements(true);
+                      gameApi
+                        .getAchievements()
+                        .then((data) => setAchievements(data || []))
+                        .catch(() => setAchievementsError(true))
+                        .finally(() => setLoadingAchievements(false));
+                    }}
+                    style={{ backgroundColor: theme.primaryMuted, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm, borderRadius: BorderRadius.full }}
+                  >
+                    <Text style={{ color: theme.primary, fontSize: FontSize.sm, fontWeight: '700' }}>Retry</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             ) : (
-              <View style={styles.achievementsGrid}>
+              <View style={{ gap: Spacing.sm }}>
+                {/* Summary pill */}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.xs }}>
+                  <View style={[styles.achieveSummaryPill, { backgroundColor: theme.primaryMuted }]}>
+                    <Ionicons name="trophy" size={12} color={theme.primary} />
+                    <Text style={{ color: theme.primary, fontSize: FontSize.xs, fontWeight: '700' }}>{unlockedCount}/{achievements.length} Unlocked</Text>
+                  </View>
+                </View>
+
                 {achievements.map((achievement) => (
-                  <View key={achievement.id} style={{ opacity: achievement.unlocked ? 1 : 0.45 }}>
-                    <Card style={styles.achievementCard} padding={Spacing.lg}>
+                  <View
+                    key={achievement.id}
+                    style={[
+                      styles.achieveCard,
+                      {
+                        backgroundColor: theme.surface,
+                        borderColor: achievement.unlocked ? theme.primary + '25' : theme.border,
+                        opacity: achievement.unlocked ? 1 : 0.55,
+                      },
+                    ]}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.md }}>
+                      {/* Icon */}
                       <View
                         style={[
-                          styles.achievementIcon,
+                          styles.achieveIcon,
                           {
                             backgroundColor: achievement.unlocked
-                              ? theme.primaryMuted
+                              ? theme.primary + '15'
                               : theme.surfaceHighlight,
                           },
                         ]}
                       >
                         <Ionicons
                           name={achievement.icon as any}
-                          size={24}
+                          size={22}
                           color={achievement.unlocked ? theme.primary : theme.textTertiary}
                         />
+                        {achievement.unlocked && (
+                          <View style={[styles.achieveCheck, { backgroundColor: theme.primary }]}>
+                            <Ionicons name="checkmark" size={8} color="#fff" />
+                          </View>
+                        )}
                       </View>
-                      <Text
-                        style={[styles.achievementName, { color: theme.text }]}
-                        numberOfLines={1}
-                      >
-                        {achievement.name}
-                      </Text>
-                      <Text
-                        style={[styles.achievementDesc, { color: theme.textTertiary }]}
-                        numberOfLines={2}
-                      >
-                        {achievement.description}
-                      </Text>
-                      <View style={[styles.xpBadge, { backgroundColor: theme.accentMuted }]}>
-                        <Text style={[styles.xpBadgeText, { color: theme.accent }]}>
-                          +{achievement.xp_reward} XP
+
+                      {/* Text */}
+                      <View style={{ flex: 1, gap: 2 }}>
+                        <Text style={[styles.achieveName, { color: theme.text }]}>
+                          {achievement.name}
+                        </Text>
+                        <Text style={[styles.achieveDesc, { color: theme.textTertiary }]} numberOfLines={2}>
+                          {achievement.description}
                         </Text>
                       </View>
-                      {achievement.unlocked && (
-                        <View style={[styles.unlockedBadge, { backgroundColor: theme.primary }]}>
-                          <Ionicons name="checkmark" size={10} color="#FFF" />
-                        </View>
-                      )}
-                    </Card>
+
+                      {/* XP badge */}
+                      <View style={[styles.achieveXP, { backgroundColor: theme.accentMuted }]}>
+                        <Text style={[styles.achieveXPText, { color: theme.accent }]}>+{achievement.xp_reward} XP</Text>
+                      </View>
+                    </View>
                   </View>
                 ))}
-                {achievements.length === 0 && !loadingAchievements && (
-                  <View style={styles.emptyState}>
-                    <Ionicons name={achievementsError ? 'cloud-offline-outline' : 'trophy-outline'} size={48} color={theme.textTertiary} />
-                    <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
-                      {achievementsError ? 'Unable to load achievements' : 'No achievements yet. Keep exploring!'}
-                    </Text>
-                    {achievementsError && (
-                      <TouchableOpacity
-                        onPress={() => {
-                          setAchievementsError(false);
-                          setLoadingAchievements(true);
-                          gameApi
-                            .getAchievements()
-                            .then((data) => setAchievements(data || []))
-                            .catch(() => setAchievementsError(true))
-                            .finally(() => setLoadingAchievements(false));
-                        }}
-                        style={{ backgroundColor: theme.primaryMuted, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm, borderRadius: BorderRadius.full }}
-                      >
-                        <Text style={{ color: theme.primary, fontSize: FontSize.sm, fontWeight: '700' }}>Retry</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                )}
               </View>
             )}
           </>
         )}
 
-        {/* Logout */}
-        <Button
-          title="Sign Out"
-          variant="ghost"
-          onPress={() => {
-            Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
-              { text: 'Cancel', style: 'cancel' },
-              {
-                text: 'Sign Out',
-                style: 'destructive',
-                onPress: () => {
-                  logout();
-                  router.replace('/(auth)/login');
-                },
-              },
-            ]);
-          }}
-          style={{ marginTop: Spacing.xxxl, marginBottom: Spacing.huge }}
-        />
       </ScrollView>
     </ScreenContainer>
   );
@@ -382,7 +275,21 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
   scroll: {
-    paddingTop: Spacing.lg,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.huge,
+  },
+  topBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: Spacing.md,
+  },
+  topBarBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   profileHeader: {
     alignItems: 'center',
@@ -460,99 +367,57 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     fontWeight: '500',
   },
-  sectionTitle: {
-    fontSize: FontSize.lg,
-    fontWeight: '700',
-    marginBottom: Spacing.md,
+
+  achieveCard: {
+    flexDirection: 'column',
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    borderWidth: 1,
   },
-  themeRow: {
-    flexDirection: 'row',
-    padding: 4,
-  },
-  themeOption: {
-    flex: 1,
-    flexDirection: 'row',
+  achieveIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingVertical: Spacing.sm + 2,
-    borderRadius: BorderRadius.sm,
-  },
-  themeOptionText: {
-    fontSize: FontSize.sm,
-    fontWeight: '700',
-  },
-  settingsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    gap: Spacing.md,
-  },
-  settingsIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: BorderRadius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  settingsInfo: {
-    flex: 1,
-  },
-  settingsLabel: {
-    fontSize: FontSize.md,
-    fontWeight: '600',
-  },
-  settingsDesc: {
-    fontSize: FontSize.sm,
-    marginTop: 1,
-  },
-  achievementsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.md,
-  },
-  achievementCard: {
-    width: '47%' as any,
-    alignItems: 'center',
-    gap: Spacing.sm,
     position: 'relative',
   },
-  achievementIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+  achieveCheck: {
+    position: 'absolute',
+    top: -3,
+    right: -3,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#fff',
   },
-  achievementName: {
+  achieveName: {
     fontSize: FontSize.sm,
     fontWeight: '700',
-    textAlign: 'center',
   },
-  achievementDesc: {
+  achieveDesc: {
     fontSize: FontSize.xs,
-    textAlign: 'center',
     lineHeight: 16,
   },
-  xpBadge: {
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 2,
+  achieveXP: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
     borderRadius: BorderRadius.full,
   },
-  xpBadgeText: {
-    fontSize: FontSize.xs,
-    fontWeight: '700',
+  achieveXPText: {
+    fontSize: 11,
+    fontWeight: '800',
   },
-  unlockedBadge: {
-    position: 'absolute',
-    top: Spacing.sm,
-    right: Spacing.sm,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+  achieveSummaryPill: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.full,
   },
   emptyState: {
     width: '100%',

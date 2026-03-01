@@ -23,10 +23,13 @@ interface UserProfile {
 
 interface AuthState {
   token: string | null;
+  refreshToken: string | null;
   user: UserProfile | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   setToken: (token: string) => void;
+  setRefreshToken: (refreshToken: string) => void;
+  setTokens: (accessToken: string, refreshToken: string) => void;
   setUser: (user: UserProfile) => void;
   addXp: (xp: number) => void;
   logout: () => void;
@@ -34,14 +37,24 @@ interface AuthState {
   loadAuth: () => Promise<void>;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   token: null,
+  refreshToken: null,
   user: null,
   isAuthenticated: false,
   isLoading: true,
   setToken: (token) => {
     SecureStore.setItemAsync('auth_token', token).catch(console.error);
     set({ token, isAuthenticated: true });
+  },
+  setRefreshToken: (refreshToken) => {
+    SecureStore.setItemAsync('refresh_token', refreshToken).catch(console.error);
+    set({ refreshToken });
+  },
+  setTokens: (accessToken, refreshToken) => {
+    SecureStore.setItemAsync('auth_token', accessToken).catch(console.error);
+    SecureStore.setItemAsync('refresh_token', refreshToken).catch(console.error);
+    set({ token: accessToken, refreshToken, isAuthenticated: true });
   },
   setUser: (user) => {
     SecureStore.setItemAsync('auth_user', JSON.stringify(user)).catch(console.error);
@@ -59,49 +72,110 @@ export const useAuthStore = create<AuthState>((set) => ({
     }),
   logout: () => {
     SecureStore.deleteItemAsync('auth_token').catch(console.error);
+    SecureStore.deleteItemAsync('refresh_token').catch(console.error);
     SecureStore.deleteItemAsync('auth_user').catch(console.error);
-    set({ token: null, user: null, isAuthenticated: false });
+    set({ token: null, refreshToken: null, user: null, isAuthenticated: false });
   },
   setLoading: (isLoading) => set({ isLoading }),
   loadAuth: async () => {
     try {
-      const [token, userStr] = await Promise.all([
+      const [token, refreshToken, userStr] = await Promise.all([
         SecureStore.getItemAsync('auth_token'),
+        SecureStore.getItemAsync('refresh_token'),
         SecureStore.getItemAsync('auth_user'),
       ]);
-      if (token && userStr) {
+
+      if (!token && !refreshToken) {
+        set({ isLoading: false });
+        return;
+      }
+
+      // Try the access token first
+      let accessToken = token;
+      let currentRefreshToken = refreshToken;
+
+      if (accessToken) {
         const meResponse = await fetch(`${API_URL}/auth/me`, {
           headers: {
-            Authorization: `Bearer ${token}`,
+            Authorization: `Bearer ${accessToken}`,
             'Content-Type': 'application/json',
           },
         });
 
-        if (!meResponse.ok) {
-          await Promise.all([
-            SecureStore.deleteItemAsync('auth_token'),
-            SecureStore.deleteItemAsync('auth_user'),
-          ]);
-          set({ token: null, user: null, isAuthenticated: false, isLoading: false });
+        if (meResponse.ok) {
+          const profile = await meResponse.json();
+          const normalizedUser = {
+            ...profile,
+            dietary_preferences: profile?.dietary_preferences || [],
+            flavor_preferences: profile?.flavor_preferences || [],
+            allergies: profile?.allergies || [],
+            liked_ingredients: profile?.liked_ingredients || [],
+            disliked_ingredients: profile?.disliked_ingredients || [],
+            protein_preferences: profile?.protein_preferences || { liked: [], disliked: [] },
+          };
+
+          await SecureStore.setItemAsync('auth_user', JSON.stringify(normalizedUser));
+          set({ token: accessToken, refreshToken: currentRefreshToken, user: normalizedUser, isAuthenticated: true, isLoading: false });
           return;
         }
-
-        const profile = await meResponse.json();
-        const normalizedUser = {
-          ...profile,
-          dietary_preferences: profile?.dietary_preferences || [],
-          flavor_preferences: profile?.flavor_preferences || [],
-          allergies: profile?.allergies || [],
-          liked_ingredients: profile?.liked_ingredients || [],
-          disliked_ingredients: profile?.disliked_ingredients || [],
-          protein_preferences: profile?.protein_preferences || { liked: [], disliked: [] },
-        };
-
-        await SecureStore.setItemAsync('auth_user', JSON.stringify(normalizedUser));
-        set({ token, user: normalizedUser, isAuthenticated: true, isLoading: false });
-      } else {
-        set({ isLoading: false });
       }
+
+      // Access token expired or missing — try refresh
+      if (currentRefreshToken) {
+        try {
+          const refreshResponse = await fetch(`${API_URL}/auth/refresh`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refresh_token: currentRefreshToken }),
+          });
+
+          if (refreshResponse.ok) {
+            const tokens = await refreshResponse.json();
+            accessToken = tokens.access_token;
+            currentRefreshToken = tokens.refresh_token;
+
+            await Promise.all([
+              SecureStore.setItemAsync('auth_token', accessToken!),
+              SecureStore.setItemAsync('refresh_token', currentRefreshToken!),
+            ]);
+
+            // Fetch profile with new token
+            const meResponse = await fetch(`${API_URL}/auth/me`, {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+              },
+            });
+
+            if (meResponse.ok) {
+              const profile = await meResponse.json();
+              const normalizedUser = {
+                ...profile,
+                dietary_preferences: profile?.dietary_preferences || [],
+                flavor_preferences: profile?.flavor_preferences || [],
+                allergies: profile?.allergies || [],
+                liked_ingredients: profile?.liked_ingredients || [],
+                disliked_ingredients: profile?.disliked_ingredients || [],
+                protein_preferences: profile?.protein_preferences || { liked: [], disliked: [] },
+              };
+
+              await SecureStore.setItemAsync('auth_user', JSON.stringify(normalizedUser));
+              set({ token: accessToken, refreshToken: currentRefreshToken, user: normalizedUser, isAuthenticated: true, isLoading: false });
+              return;
+            }
+          }
+        } catch (e) {
+          console.error('Refresh token failed:', e);
+        }
+      }
+
+      // Both tokens invalid — clean up
+      await Promise.all([
+        SecureStore.deleteItemAsync('auth_token'),
+        SecureStore.deleteItemAsync('refresh_token'),
+        SecureStore.deleteItemAsync('auth_user'),
+      ]);
+      set({ token: null, refreshToken: null, user: null, isAuthenticated: false, isLoading: false });
     } catch (error) {
       console.error('Failed to load auth:', error);
       set({ isLoading: false });

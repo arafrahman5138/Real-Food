@@ -70,8 +70,7 @@ export default function ChatScreen() {
   const clearChat = useChatStore((s) => s.clearChat);
   const loadLastSession = useChatStore((s) => s.loadLastSession);
   const savedRecipes = useSavedRecipesStore((s) => s.recipes);
-  const completeAction = useGamificationStore((s) => s.completeAction);
-  const addXp = useAuthStore((s) => s.addXp);
+  const awardXP = useGamificationStore((s) => s.awardXP);
   const saveRecipe = useSavedRecipesStore((s) => s.saveRecipe);
   const saveGeneratedRecipe = useSavedRecipesStore((s) => s.saveGeneratedRecipe);
   const removeRecipe = useSavedRecipesStore((s) => s.removeRecipe);
@@ -107,11 +106,10 @@ export default function ChatScreen() {
         swaps: normalized.swaps,
         nutrition: normalized.nutrition,
       });
-      const questResult = completeAction('healthify');
-      if (questResult.gainedXp > 0) {
-        addXp(questResult.gainedXp);
-        showQuestToast(`Quest complete · +${questResult.gainedXp} XP`);
-      }
+      // Award XP for healthify usage
+      awardXP(25, 'healthify').then((res) => {
+        if (res.xp_gained > 0) showQuestToast(`+${res.xp_gained} XP · Healthify`);
+      });
     } catch (err: any) {
       const rawMessage = String(err?.message || '');
       const friendlyMessage =
@@ -155,11 +153,10 @@ export default function ChatScreen() {
             swaps: normalized.swaps,
             nutrition: normalized.nutrition,
           });
-          const questResult = completeAction('healthify');
-          if (questResult.gainedXp > 0) {
-            addXp(questResult.gainedXp);
-            showQuestToast(`Quest complete · +${questResult.gainedXp} XP`);
-          }
+          // Award XP for healthify usage
+          awardXP(25, 'healthify').then((res) => {
+            if (res.xp_gained > 0) showQuestToast(`+${res.xp_gained} XP · Healthify`);
+          });
         })
         .catch((err: any) => {
           const rawMessage = String(err?.message || '');

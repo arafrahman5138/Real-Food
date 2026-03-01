@@ -23,6 +23,8 @@ class Recipe(Base):
     dietary_tags = Column(JSON, default=list)
     cuisine = Column(String, default="american", index=True)
     health_benefits = Column(JSON, default=list)
+    protein_type = Column(JSON, default=list)
+    carb_type = Column(JSON, default=list)
     is_ai_generated = Column(Boolean, default=True)
     image_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

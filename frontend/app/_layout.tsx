@@ -6,6 +6,7 @@ import { useTheme } from '../hooks/useTheme';
 import { useThemeStore } from '../stores/themeStore';
 import { useAuthStore } from '../stores/authStore';
 import { useGamificationStore } from '../stores/gamificationStore';
+import LogoHeader from '../components/LogoHeader';
 
 export default function RootLayout() {
   const theme = useTheme();
@@ -41,12 +42,13 @@ export default function RootLayout() {
       <Stack
         screenOptions={{
           headerShown: false,
+          headerBackTitleVisible: false,
           contentStyle: { backgroundColor: theme.background },
           animation: 'slide_from_right',
         }}
       >
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="(tabs)" options={{ headerShown: false, headerTitle: '' }} />
         <Stack.Screen
           name="cook/[id]"
           options={{
@@ -67,6 +69,15 @@ export default function RootLayout() {
           }}
         />
         <Stack.Screen
+          name="food/meals"
+          options={{
+            headerShown: true,
+            headerTitle: "Today's Meals",
+            headerStyle: { backgroundColor: theme.surface },
+            headerTintColor: theme.text,
+          }}
+        />
+        <Stack.Screen
           name="browse/index"
           options={{
             headerShown: true,
@@ -79,7 +90,7 @@ export default function RootLayout() {
           name="browse/[id]"
           options={{
             headerShown: true,
-            headerTitle: 'Recipe',
+            headerTitle: () => <LogoHeader />,
             headerStyle: { backgroundColor: theme.surface },
             headerTintColor: theme.text,
           }}
@@ -89,6 +100,15 @@ export default function RootLayout() {
           options={{
             headerShown: true,
             headerTitle: 'Saved Recipes',
+            headerStyle: { backgroundColor: theme.surface },
+            headerTintColor: theme.text,
+          }}
+        />
+        <Stack.Screen
+          name="settings"
+          options={{
+            headerShown: true,
+            headerTitle: 'Settings',
             headerStyle: { backgroundColor: theme.surface },
             headerTintColor: theme.text,
           }}

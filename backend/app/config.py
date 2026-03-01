@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     secret_key: str = "dev-secret-key-change-in-production"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 365
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     google_api_key: str = ""

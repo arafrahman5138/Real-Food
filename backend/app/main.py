@@ -17,14 +17,12 @@ async def lifespan(app: FastAPI):
 
 
 def _seed_on_startup():
-    """Populate recipes and achievements on startup."""
+    """Populate achievements on startup. Recipe seeding is disabled — run seed_db.py manually."""
     import logging
     log = logging.getLogger(__name__)
-    try:
-        from seed_db import seed_recipes
-        seed_recipes()
-    except Exception as exc:
-        log.warning("Recipe seeding skipped: %s", exc)
+    # Recipe seeding disabled — old meals backed up in seed_meals_backup.json.
+    # To re-seed old meals: python seed_db.py
+    # To restore from backup: python restore_meals.py
     try:
         from app.achievements_engine import seed_achievements
         from app.db import SessionLocal

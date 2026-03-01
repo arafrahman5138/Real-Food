@@ -38,7 +38,7 @@ export function MyPlanView() {
   const theme = useTheme();
   const user = useAuthStore((s) => s.user);
   const addXp = useAuthStore((s) => s.addXp);
-  const completeAction = useGamificationStore((s) => s.completeAction);
+  const awardXP = useGamificationStore((s) => s.awardXP);
   const { currentPlan, isGenerating, selectedDay, setCurrentPlan, setGenerating, setSelectedDay } =
     useMealPlanStore();
   const loadCurrentPlan = useMealPlanStore((s) => s.loadCurrentPlan);
@@ -93,11 +93,12 @@ export function MyPlanView() {
       }
       setCurrentPlan(result);
       setShowPrefs(false);
-      const questResult = completeAction('meal_plan');
-      if (questResult.gainedXp > 0) {
-        addXp(questResult.gainedXp);
-        showQuestToast(`Quest complete · +${questResult.gainedXp} XP`);
-      }
+      // Award XP for generating a meal plan
+      awardXP(500, 'weekly_meal_plan').then((res) => {
+        if (res.xp_gained > 0) {
+          showQuestToast(`+${res.xp_gained} XP · Weekly Plan`);
+        }
+      });
     } catch (err: any) {
       setError(err?.message || 'Unable to generate meal plan. Please try again.');
     } finally {

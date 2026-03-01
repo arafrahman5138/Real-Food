@@ -1,5 +1,6 @@
 import { API_URL } from '../constants/Config';
 import { useAuthStore } from '../stores/authStore';
+import * as SecureStore from 'expo-secure-store';
 
 class ApiClient {
   private baseUrl: string;
@@ -82,6 +83,45 @@ class ApiClient {
     throw lastError || new Error('Request failed after retries.');
   }
 
+  private isRefreshing = false;
+  private refreshPromise: Promise<boolean> | null = null;
+
+  /**
+   * Try to silently refresh tokens using the stored refresh_token.
+   * Returns true if refresh succeeded, false otherwise.
+   */
+  private async tryRefresh(): Promise<boolean> {
+    if (this.isRefreshing && this.refreshPromise) {
+      return this.refreshPromise;
+    }
+    this.isRefreshing = true;
+    this.refreshPromise = (async () => {
+      try {
+        const refreshToken = useAuthStore.getState().refreshToken
+          || await SecureStore.getItemAsync('refresh_token');
+        if (!refreshToken) return false;
+
+        const response = await fetch(`${this.baseUrl}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+
+        if (!response.ok) return false;
+
+        const tokens = await response.json();
+        useAuthStore.getState().setTokens(tokens.access_token, tokens.refresh_token);
+        return true;
+      } catch {
+        return false;
+      } finally {
+        this.isRefreshing = false;
+        this.refreshPromise = null;
+      }
+    })();
+    return this.refreshPromise;
+  }
+
   private async parseAndThrow(response: Response): Promise<never> {
     const error = await response.json().catch(() => ({}));
 
@@ -93,54 +133,57 @@ class ApiClient {
     throw new Error(error.detail || `Request failed: ${response.status}`);
   }
 
-  async get<T>(endpoint: string): Promise<T> {
-    const response = await this.fetchWithRetry(
-      `${this.baseUrl}${endpoint}`,
-      { method: 'GET', headers: this.getHeaders() },
-      endpoint,
-    );
+  /**
+   * Wrapper that retries a request once after a silent token refresh on 401.
+   */
+  private async requestWithRefresh<T>(
+    method: string,
+    endpoint: string,
+    body?: unknown,
+  ): Promise<T> {
+    const doFetch = () =>
+      this.fetchWithRetry(
+        `${this.baseUrl}${endpoint}`,
+        {
+          method,
+          headers: this.getHeaders(),
+          body: body ? JSON.stringify(body) : undefined,
+        },
+        endpoint,
+      );
+
+    let response = await doFetch();
+
+    // On 401, try a silent refresh and retry once
+    if (response.status === 401) {
+      const refreshed = await this.tryRefresh();
+      if (refreshed) {
+        response = await doFetch();
+      }
+    }
+
     if (!response.ok) await this.parseAndThrow(response);
     return response.json();
+  }
+
+  async get<T>(endpoint: string): Promise<T> {
+    return this.requestWithRefresh<T>('GET', endpoint);
   }
 
   async post<T>(endpoint: string, body?: unknown): Promise<T> {
-    const response = await this.fetchWithRetry(
-      `${this.baseUrl}${endpoint}`,
-      { method: 'POST', headers: this.getHeaders(), body: body ? JSON.stringify(body) : undefined },
-      endpoint,
-    );
-    if (!response.ok) await this.parseAndThrow(response);
-    return response.json();
+    return this.requestWithRefresh<T>('POST', endpoint, body);
   }
 
   async put<T>(endpoint: string, body?: unknown): Promise<T> {
-    const response = await this.fetchWithRetry(
-      `${this.baseUrl}${endpoint}`,
-      { method: 'PUT', headers: this.getHeaders(), body: body ? JSON.stringify(body) : undefined },
-      endpoint,
-    );
-    if (!response.ok) await this.parseAndThrow(response);
-    return response.json();
+    return this.requestWithRefresh<T>('PUT', endpoint, body);
   }
 
   async patch<T>(endpoint: string, body?: unknown): Promise<T> {
-    const response = await this.fetchWithRetry(
-      `${this.baseUrl}${endpoint}`,
-      { method: 'PATCH', headers: this.getHeaders(), body: body ? JSON.stringify(body) : undefined },
-      endpoint,
-    );
-    if (!response.ok) await this.parseAndThrow(response);
-    return response.json();
+    return this.requestWithRefresh<T>('PATCH', endpoint, body);
   }
 
   async delete<T>(endpoint: string): Promise<T> {
-    const response = await this.fetchWithRetry(
-      `${this.baseUrl}${endpoint}`,
-      { method: 'DELETE', headers: this.getHeaders() },
-      endpoint,
-    );
-    if (!response.ok) await this.parseAndThrow(response);
-    return response.json();
+    return this.requestWithRefresh<T>('DELETE', endpoint);
   }
 
   async stream(
@@ -154,12 +197,26 @@ class ApiClient {
     const timer = setTimeout(() => controller.abort(), timeout);
 
     try {
-      const response = await fetch(`${this.baseUrl}${endpoint}`, {
+      let response = await fetch(`${this.baseUrl}${endpoint}`, {
         method: 'POST',
         headers: this.getHeaders(),
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+
+      // On 401, try silent refresh and retry
+      if (response.status === 401) {
+        const refreshed = await this.tryRefresh();
+        if (refreshed) {
+          response = await fetch(`${this.baseUrl}${endpoint}`, {
+            method: 'POST',
+            headers: this.getHeaders(),
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+        }
+      }
+
       if (!response.ok) {
         throw new Error(`Stream failed: ${response.status}`);
       }
@@ -201,11 +258,13 @@ export const api = new ApiClient();
 
 export const authApi = {
   register: (data: { email: string; password: string; name: string }) =>
-    api.post<{ access_token: string }>('/auth/register', data),
+    api.post<{ access_token: string; refresh_token: string }>('/auth/register', data),
   login: (data: { email: string; password: string }) =>
-    api.post<{ access_token: string }>('/auth/login', data),
+    api.post<{ access_token: string; refresh_token: string }>('/auth/login', data),
   socialAuth: (data: { provider: string; token: string; name?: string; email?: string }) =>
-    api.post<{ access_token: string }>('/auth/social', data),
+    api.post<{ access_token: string; refresh_token: string }>('/auth/social', data),
+  refresh: (refreshToken: string) =>
+    api.post<{ access_token: string; refresh_token: string }>('/auth/refresh', { refresh_token: refreshToken }),
   getProfile: () => api.get<any>('/auth/me'),
   updatePreferences: (data: any) => api.put('/auth/preferences', data),
 };
@@ -306,4 +365,11 @@ export const gameApi = {
   updateStreak: () => api.post<any>('/game/streak'),
   awardXP: (amount: number, reason: string) =>
     api.post<any>(`/game/xp?amount=${amount}&reason=${encodeURIComponent(reason)}`),
+  // New nutrition gamification endpoints
+  getNutritionStreak: () => api.get<any>('/game/nutrition-streak'),
+  getScoreHistory: (days?: number) =>
+    api.get<any[]>(`/game/score-history${days ? `?days=${days}` : ''}`),
+  getDailyQuests: () => api.get<any[]>('/game/daily-quests'),
+  updateQuestProgress: (questId: string, amount?: number) =>
+    api.post<any>(`/game/daily-quests/${questId}/progress${amount ? `?amount=${amount}` : ''}`),
 };

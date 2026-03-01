@@ -39,7 +39,7 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string; name?: string }>({});
-  const { setToken, setUser } = useAuthStore();
+  const { setTokens, setUser } = useAuthStore();
 
   // Google OAuth configuration
   const [googleRequest, googleResponse, googlePromptAsync] = AuthSession.useAuthRequest(
@@ -77,7 +77,7 @@ export default function LoginScreen() {
         email: userInfo.email,
       });
 
-      setToken(result.access_token);
+      setTokens(result.access_token, result.refresh_token);
       const profile = await authApi.getProfile();
       setUser(profile);
       const needsOnboarding =
@@ -114,7 +114,7 @@ export default function LoginScreen() {
         email,
       });
 
-      setToken(result.access_token);
+      setTokens(result.access_token, result.refresh_token);
       const profile = await authApi.getProfile();
       setUser(profile);
       const needsOnboarding =
@@ -149,7 +149,7 @@ export default function LoginScreen() {
       } else {
         result = await authApi.login({ email, password });
       }
-      setToken(result.access_token);
+      setTokens(result.access_token, result.refresh_token);
       const profile = await authApi.getProfile();
       setUser(profile);
       const needsOnboarding =

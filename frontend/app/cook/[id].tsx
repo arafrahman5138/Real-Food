@@ -10,23 +10,25 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  UIManager,
+  LayoutAnimation,
   Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, router } from 'expo-router';
-import * as Haptics from 'expo-haptics';
 import { useKeepAwake } from 'expo-keep-awake';
 import { Card } from '../../components/GradientCard';
 import { Button } from '../../components/Button';
 import { useTheme } from '../../hooks/useTheme';
-import { nutritionApi, recipeApi } from '../../services/api';
+import { nutritionApi, recipeApi, gameApi } from '../../services/api';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
 
 type Ingredient = {
   name: string;
   quantity?: string | number;
   unit?: string;
+  category?: string;
 };
 
 type RecipeDetail = {
@@ -39,6 +41,21 @@ type RecipeDetail = {
   servings?: number;
 };
 
+const INGREDIENT_CATEGORIES: Record<string, { label: string; icon: string; color: string; order: number }> = {
+  protein: { label: 'Protein', icon: 'fish-outline', color: '#EF4444', order: 0 },
+  produce: { label: 'Produce', icon: 'leaf-outline', color: '#22C55E', order: 1 },
+  dairy:   { label: 'Dairy', icon: 'water-outline', color: '#3B82F6', order: 2 },
+  grains:  { label: 'Grains', icon: 'nutrition-outline', color: '#F59E0B', order: 3 },
+  fats:    { label: 'Fats & Oils', icon: 'flask-outline', color: '#A855F7', order: 4 },
+  spices:  { label: 'Spices & Seasonings', icon: 'flame-outline', color: '#F97316', order: 5 },
+  sweetener: { label: 'Sweeteners', icon: 'cafe-outline', color: '#EC4899', order: 6 },
+  other:   { label: 'Other', icon: 'cube-outline', color: '#6B7280', order: 7 },
+};
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
 export default function CookModeScreen() {
   useKeepAwake();
   const theme = useTheme();
@@ -47,11 +64,9 @@ export default function CookModeScreen() {
   const [recipe, setRecipe] = useState<RecipeDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [currentStep, setCurrentStep] = useState(0);
-  const [viewMode, setViewMode] = useState<'interactive' | 'list'>('interactive');
   const [ingredientsChecked, setIngredientsChecked] = useState<Set<number>>(new Set());
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
 
-  const [timerSeconds, setTimerSeconds] = useState(0);
-  const [timerRunning, setTimerRunning] = useState(false);
   const progressAnim = useRef(new Animated.Value(0)).current;
 
   // AI assistant state
@@ -91,31 +106,6 @@ export default function CookModeScreen() {
     }).start();
   }, [currentStep, totalSteps, progressAnim]);
 
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | null = null;
-    if (timerRunning && timerSeconds > 0) {
-      interval = setInterval(() => {
-        setTimerSeconds((s) => {
-          if (s <= 1) {
-            setTimerRunning(false);
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            return 0;
-          }
-          return s - 1;
-        });
-      }, 1000);
-    }
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [timerRunning, timerSeconds]);
-
-  const formatTime = (seconds: number) => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
-
   const askAssistant = async (question?: string) => {
     if (!recipe?.id) return;
     setAiLoading(true);
@@ -135,6 +125,30 @@ export default function CookModeScreen() {
     setCurrentStep(newStep);
     setAiAnswer('');
     setShowAssistant(false);
+  };
+
+  const toggleIngredient = (index: number, categoryKey: string, groupIndices: number[]) => {
+    setIngredientsChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      const allChecked = groupIndices.every((i) => next.has(i));
+      if (allChecked) {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setCollapsedCategories((p) => new Set(p).add(categoryKey));
+      }
+      return next;
+    });
+  };
+
+  const toggleCategory = (key: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setCollapsedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
 
   if (loading) {
@@ -187,110 +201,15 @@ export default function CookModeScreen() {
           </TouchableOpacity>
         </View>
 
-        <View style={[styles.modeToggle, { backgroundColor: theme.surfaceElevated, borderColor: theme.border }]}>
-          <TouchableOpacity
-            onPress={() => setViewMode('interactive')}
-            style={[styles.modeBtn, viewMode === 'interactive' && { backgroundColor: theme.primary }]}
-          >
-            <Text style={[styles.modeBtnText, { color: viewMode === 'interactive' ? '#fff' : theme.textSecondary }]}>
-              Cook Mode
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => setViewMode('list')}
-            style={[styles.modeBtn, viewMode === 'list' && { backgroundColor: theme.primary }]}
-          >
-            <Text style={[styles.modeBtnText, { color: viewMode === 'list' ? '#fff' : theme.textSecondary }]}>
-              List View
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Timer */}
-        <Card style={styles.timerCard}>
-          <View style={styles.timerRow}>
-            <Ionicons name="timer" size={22} color={theme.accent} />
-            <Text style={[styles.timerDisplay, { color: theme.text }]}>{formatTime(timerSeconds)}</Text>
-            <View style={styles.timerButtons}>
-              {[60, 300, 900].map((seconds) => (
-                <TouchableOpacity
-                  key={seconds}
-                  onPress={() => setTimerSeconds(seconds)}
-                  style={[styles.timerPreset, { backgroundColor: theme.surfaceHighlight }]}
-                >
-                  <Text style={[styles.timerPresetText, { color: theme.textSecondary }]}>{seconds / 60}m</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-          <View style={styles.timerActions}>
-            <Button
-              title={timerRunning ? 'Pause' : 'Start'}
-              variant={timerRunning ? 'outline' : 'primary'}
-              size="sm"
-              onPress={() => setTimerRunning((v) => !v)}
-            />
-            <Button
-              title="Reset"
-              variant="ghost"
-              size="sm"
-              onPress={() => { setTimerSeconds(0); setTimerRunning(false); }}
-            />
-          </View>
-        </Card>
-
-        {/* Ingredients */}
-        <Text style={[styles.sectionTitle, { color: theme.text }]}>Ingredients</Text>
-        {recipe.ingredients.map((item, index) => {
-          const checked = ingredientsChecked.has(index);
-          return (
-            <TouchableOpacity
-              key={`${item.name}-${index}`}
-              onPress={() => {
-                setIngredientsChecked((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(index)) next.delete(index);
-                  else next.add(index);
-                  return next;
-                });
-              }}
-              style={[styles.ingredientRow, { borderBottomColor: theme.border }]}
-              activeOpacity={0.75}
-            >
-              <View
-                style={[
-                  styles.checkCircle,
-                  {
-                    borderColor: checked ? theme.primary : theme.borderLight,
-                    backgroundColor: checked ? theme.primary : 'transparent',
-                  },
-                ]}
-              >
-                {checked ? <Ionicons name="checkmark" size={12} color="#fff" /> : null}
-              </View>
-              <Text
-                style={[
-                  styles.ingredientName,
-                  { color: checked ? theme.textTertiary : theme.text, textDecorationLine: checked ? 'line-through' : 'none' },
-                ]}
-              >
-                {item.quantity || ''} {item.unit || ''} {item.name}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-
         {/* Instructions */}
-        <Text style={[styles.sectionTitle, { color: theme.text, marginTop: Spacing.xl }]}>Instructions</Text>
+        <Text style={[styles.sectionTitle, { color: theme.text }]}>Instructions</Text>
 
-        {viewMode === 'interactive' ? (
-          <>
             <Text style={[styles.stepCounter, { color: theme.textTertiary }]}>
               Step {currentStep + 1} of {recipe.steps.length}
             </Text>
             <LinearGradient colors={theme.gradient.primary} style={styles.stepCard}>
               <Text style={styles.stepNumber}>Step {currentStep + 1}</Text>
-              <Text style={styles.stepText}>{recipe.steps[currentStep]}</Text>
+              <Text style={styles.stepText}>{recipe.steps[currentStep].replace(/^Step\s*\d+\s*:\s*/i, '')}</Text>
             </LinearGradient>
 
             {/* AI Help Button */}
@@ -390,6 +309,8 @@ export default function CookModeScreen() {
                                 quantity: 1,
                               });
                               setLoggedCook(true);
+                              // Award XP for completing cook mode
+                              gameApi.awardXP(50, 'cook_complete').catch(() => {});
                             } catch (e) {
                               console.error('cook log failed', e);
                             }
@@ -402,19 +323,72 @@ export default function CookModeScreen() {
                 }}
               />
             </View>
-          </>
-        ) : (
-          <View style={styles.listStepsWrap}>
-            {recipe.steps.map((step, i) => (
-              <View key={i} style={styles.stepListRow}>
-                <View style={[styles.stepBadge, { backgroundColor: theme.primaryMuted }]}>
-                  <Text style={[styles.stepBadgeText, { color: theme.primary }]}>{i + 1}</Text>
-                </View>
-                <Text style={[styles.stepListText, { color: theme.text }]}>{step}</Text>
+
+        {/* Ingredients */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.sm, marginTop: Spacing.xl }}>
+          <Text style={[styles.sectionTitle, { color: theme.text, marginBottom: 0 }]}>Ingredients</Text>
+          <Text style={{ color: theme.textTertiary, fontSize: FontSize.xs, fontWeight: '600' }}>
+            {ingredientsChecked.size}/{recipe.ingredients.length}
+          </Text>
+        </View>
+        {(() => {
+          const groups: Record<string, { ing: Ingredient; idx: number }[]> = {};
+          recipe.ingredients.forEach((ing, idx) => {
+            const cat = ing.category && INGREDIENT_CATEGORIES[ing.category] ? ing.category : 'other';
+            if (!groups[cat]) groups[cat] = [];
+            groups[cat].push({ ing, idx });
+          });
+          const sortedKeys = Object.keys(groups).sort(
+            (a, b) => (INGREDIENT_CATEGORIES[a]?.order ?? 99) - (INGREDIENT_CATEGORIES[b]?.order ?? 99)
+          );
+          return sortedKeys.map((catKey) => {
+            const catInfo = INGREDIENT_CATEGORIES[catKey] || INGREDIENT_CATEGORIES.other;
+            const items = groups[catKey];
+            const groupIndices = items.map((i) => i.idx);
+            const checkedCount = groupIndices.filter((i) => ingredientsChecked.has(i)).length;
+            const allDone = checkedCount === items.length;
+            const isCollapsed = collapsedCategories.has(catKey);
+            return (
+              <View key={catKey} style={styles.ingredientGroup}>
+                <TouchableOpacity
+                  style={styles.categoryHeader}
+                  onPress={() => toggleCategory(catKey)}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.categoryPill, { backgroundColor: catInfo.color + '18' }]}>
+                    <Ionicons name={catInfo.icon as any} size={14} color={catInfo.color} />
+                    <Text style={[styles.categoryLabel, { color: catInfo.color }]}>{catInfo.label}</Text>
+                  </View>
+                  <View style={styles.categoryRight}>
+                    <Text style={[styles.categoryCount, { color: allDone ? theme.primary : theme.textTertiary }]}>
+                      {checkedCount}/{items.length}
+                    </Text>
+                    {allDone && <Ionicons name="checkmark-circle" size={16} color={theme.primary} />}
+                    <Ionicons name={isCollapsed ? 'chevron-forward' : 'chevron-down'} size={16} color={theme.textTertiary} />
+                  </View>
+                </TouchableOpacity>
+                {!isCollapsed && items.map(({ ing, idx }) => {
+                  const checked = ingredientsChecked.has(idx);
+                  return (
+                    <TouchableOpacity
+                      key={idx}
+                      style={styles.ingredientRow}
+                      onPress={() => toggleIngredient(idx, catKey, groupIndices)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={[styles.checkCircle, { borderColor: checked ? theme.primary : theme.borderLight, backgroundColor: checked ? theme.primary : 'transparent' }]}>
+                        {checked && <Ionicons name="checkmark" size={12} color="#fff" />}
+                      </View>
+                      <Text style={[styles.ingredientName, { color: checked ? theme.textTertiary : theme.text, textDecorationLine: checked ? 'line-through' : 'none' }]}>
+                        {ing.quantity || ''} {ing.unit || ''} {ing.name}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
-            ))}
-          </View>
-        )}
+            );
+          });
+        })()}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -430,39 +404,51 @@ const styles = StyleSheet.create({
   topBar: { flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.md, gap: Spacing.sm },
   closeBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   recipeTitle: { fontSize: FontSize.xxl, fontWeight: '800' },
-  modeToggle: {
-    borderWidth: 1,
-    borderRadius: BorderRadius.full,
-    padding: 4,
-    flexDirection: 'row',
-    marginBottom: Spacing.md,
-  },
-  modeBtn: {
-    flex: 1,
-    paddingVertical: Spacing.sm,
-    borderRadius: BorderRadius.full,
-    alignItems: 'center',
-  },
-  modeBtnText: { fontSize: FontSize.sm, fontWeight: '700' },
-  timerCard: { marginBottom: Spacing.lg },
-  timerRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.sm },
-  timerDisplay: { fontSize: FontSize.xxl, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  timerButtons: { flexDirection: 'row', gap: Spacing.xs, marginLeft: 'auto' },
-  timerPreset: { paddingHorizontal: Spacing.sm, paddingVertical: Spacing.xs, borderRadius: BorderRadius.full },
-  timerPresetText: { fontSize: FontSize.xs, fontWeight: '600' },
-  timerActions: { flexDirection: 'row', gap: Spacing.sm },
+
   sectionTitle: { fontSize: FontSize.lg, fontWeight: '800', marginBottom: Spacing.sm },
+  ingredientGroup: {
+    marginBottom: Spacing.sm,
+  },
+  categoryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: Spacing.sm,
+    marginBottom: 2,
+  },
+  categoryPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 5,
+    borderRadius: BorderRadius.full,
+  },
+  categoryLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  categoryRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  categoryCount: {
+    fontSize: FontSize.xs,
+    fontWeight: '600',
+  },
   ingredientRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: Spacing.sm,
-    borderBottomWidth: 1,
+    paddingLeft: Spacing.sm,
     gap: Spacing.sm,
   },
   checkCircle: {
     width: 22,
     height: 22,
-    borderRadius: 11,
+    borderRadius: 6,
     borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
@@ -540,9 +526,4 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.sm,
   },
   navRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  listStepsWrap: { gap: Spacing.md },
-  stepListRow: { flexDirection: 'row', gap: Spacing.sm },
-  stepBadge: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
-  stepBadgeText: { fontSize: FontSize.sm, fontWeight: '800' },
-  stepListText: { flex: 1, fontSize: FontSize.sm, lineHeight: 22 },
 });

@@ -16,8 +16,7 @@ import { router } from 'expo-router';
 import { useTheme } from '../../hooks/useTheme';
 import { recipeApi } from '../../services/api';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
-import { CUISINE_OPTIONS, COOK_TIME_OPTIONS, HEALTH_BENEFIT_OPTIONS } from '../../constants/Config';
-import { CUISINE_EMOJI } from '../../constants/Recipes';
+import { COOK_TIME_OPTIONS, HEALTH_BENEFIT_OPTIONS, PROTEIN_OPTIONS, CARB_OPTIONS } from '../../constants/Config';
 
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = (width - Spacing.xl * 2 - Spacing.md) / 2;
@@ -46,7 +45,8 @@ interface BrowseResult {
 }
 
 interface Filters {
-  cuisine?: string;
+  protein_type?: string;
+  carb_type?: string;
   meal_type?: string;
   flavor?: string;
   dietary?: string;
@@ -54,6 +54,15 @@ interface Filters {
   difficulty?: string;
   health_benefit?: string;
 }
+
+const MULTI_SELECT_FILTERS: (keyof Filters)[] = ['protein_type', 'carb_type'];
+
+const CATEGORY_OPTIONS = [
+  { key: null, label: 'All', icon: 'grid-outline' as const },
+  { key: 'quick', label: 'Quick', icon: 'flash-outline' as const },
+  { key: 'meal-prep', label: 'Meal Prep', icon: 'layers-outline' as const },
+  { key: 'sit-down', label: 'Sit-Down', icon: 'restaurant-outline' as const },
+] as const;
 
 export function BrowseView() {
   const theme = useTheme();
@@ -66,6 +75,7 @@ export function BrowseView() {
   const [page, setPage] = useState(1);
   const [filterModal, setFilterModal] = useState<string | null>(null);
   const [filterOptions, setFilterOptions] = useState<any>(null);
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchRecipes = useCallback(
@@ -75,7 +85,9 @@ export function BrowseView() {
       try {
         const params: Record<string, string | number> = { page: p, page_size: 20 };
         if (query) params.q = query;
-        if (filters.cuisine) params.cuisine = filters.cuisine;
+        if (selectedCategory) params.category = selectedCategory;
+        if (filters.protein_type) params.protein_type = filters.protein_type;
+        if (filters.carb_type) params.carb_type = filters.carb_type;
         if (filters.meal_type) params.meal_type = filters.meal_type;
         if (filters.flavor) params.flavor = filters.flavor;
         if (filters.dietary) params.dietary = filters.dietary;
@@ -98,7 +110,7 @@ export function BrowseView() {
         setLoading(false);
       }
     },
-    [query, filters],
+    [query, filters, selectedCategory],
   );
 
   useEffect(() => {
@@ -113,7 +125,7 @@ export function BrowseView() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query, filters]);
+  }, [query, filters, selectedCategory]);
 
   const loadMore = () => {
     if (!loading && results && page < results.total_pages) {
@@ -129,18 +141,29 @@ export function BrowseView() {
     setFilterModal(null);
   };
 
+  const toggleMultiValue = (key: keyof Filters, value: string) => {
+    setFilters((prev) => {
+      const current = prev[key] ? prev[key]!.split(',') : [];
+      const idx = current.indexOf(value);
+      if (idx >= 0) {
+        current.splice(idx, 1);
+      } else {
+        current.push(value);
+      }
+      return { ...prev, [key]: current.length > 0 ? current.join(',') : undefined };
+    });
+  };
+
   const clearFilters = () => {
     setFilters({});
+    setSelectedCategory(null);
     setQuery('');
   };
 
-  const activeFilterCount = Object.values(filters).filter(Boolean).length;
+  const activeFilterCount = Object.values(filters).filter(Boolean).length + (selectedCategory ? 1 : 0);
 
   const getBenefitInfo = (id: string) =>
     HEALTH_BENEFIT_OPTIONS.find((h) => h.id === id);
-
-  const getCuisineLabel = (id: string) =>
-    CUISINE_OPTIONS.find((c) => c.id === id)?.label || id.replace(/_/g, ' ');
 
   const renderRecipeCard = ({ item }: { item: RecipeCard }) => (
     <TouchableOpacity
@@ -148,15 +171,6 @@ export function BrowseView() {
       activeOpacity={0.7}
       onPress={() => router.push(`/browse/${item.id}`)}
     >
-      <View style={[styles.cardCuisineBadge, { backgroundColor: theme.primaryMuted }]}>
-        <Text style={styles.cardCuisineEmoji}>
-          {CUISINE_EMOJI[item.cuisine] || '🍽️'}
-        </Text>
-        <Text style={[styles.cardCuisineText, { color: theme.primary }]} numberOfLines={1}>
-          {getCuisineLabel(item.cuisine)}
-        </Text>
-      </View>
-
       <Text style={[styles.cardTitle, { color: theme.text }]} numberOfLines={2}>
         {item.title}
       </Text>
@@ -223,13 +237,31 @@ export function BrowseView() {
     </TouchableOpacity>
   );
 
+  const getMultiSelectLabel = (key: keyof Filters, label: string): string => {
+    const val = filters[key];
+    if (!val) return label;
+    const values = val.split(',');
+    if (values.length === 1) {
+      // Find a nice label from options
+      if (key === 'protein_type') {
+        return PROTEIN_OPTIONS.find((p) => p.id === values[0])?.label || values[0];
+      }
+      if (key === 'carb_type') {
+        return CARB_OPTIONS.find((c) => c.id === values[0])?.label || values[0];
+      }
+    }
+    return `${label} (${values.length})`;
+  };
+
   const renderFilterChip = (label: string, key: keyof Filters) => {
     const activeValue = filters[key];
     const isActive = !!activeValue;
+    const isMulti = MULTI_SELECT_FILTERS.includes(key);
     let displayLabel = label;
     if (isActive) {
-      if (key === 'cuisine') displayLabel = getCuisineLabel(activeValue!);
-      else if (key === 'health_benefit') displayLabel = getBenefitInfo(activeValue!)?.label || activeValue!;
+      if (isMulti) {
+        displayLabel = getMultiSelectLabel(key, label);
+      } else if (key === 'health_benefit') displayLabel = getBenefitInfo(activeValue!)?.label || activeValue!;
       else if (key === 'cook_time') displayLabel = COOK_TIME_OPTIONS.find((c) => c.id === activeValue)?.label || activeValue!;
       else displayLabel = activeValue!.charAt(0).toUpperCase() + activeValue!.slice(1);
     }
@@ -240,8 +272,8 @@ export function BrowseView() {
         style={[
           styles.filterChip,
           {
-            backgroundColor: isActive ? theme.primary : theme.surfaceElevated,
-            borderColor: isActive ? theme.primary : theme.border,
+            backgroundColor: isActive ? theme.primary : theme.surfaceElevated + 'BB',
+            borderColor: isActive ? theme.primary : theme.border + '55',
           },
         ]}
         onPress={() => {
@@ -274,13 +306,19 @@ export function BrowseView() {
 
     let title = '';
     let options: { value: string; label: string; count: number }[] = [];
-    let filterKey: keyof Filters = 'cuisine';
+    let filterKey: keyof Filters = 'meal_type';
+    const isMulti = MULTI_SELECT_FILTERS.includes(filterModal as keyof Filters);
 
     switch (filterModal) {
-      case 'cuisine':
-        title = 'Cuisine';
-        filterKey = 'cuisine';
-        options = filterOptions.cuisines || [];
+      case 'protein_type':
+        title = 'Protein';
+        filterKey = 'protein_type';
+        options = filterOptions.protein_types || PROTEIN_OPTIONS.map((p) => ({ value: p.id, label: p.label, count: 0 }));
+        break;
+      case 'carb_type':
+        title = 'Carb';
+        filterKey = 'carb_type';
+        options = filterOptions.carb_types || CARB_OPTIONS.map((c) => ({ value: c.id, label: c.label, count: 0 }));
         break;
       case 'meal_type':
         title = 'Meal Type';
@@ -314,6 +352,8 @@ export function BrowseView() {
         break;
     }
 
+    const selectedValues = filters[filterKey] ? filters[filterKey]!.split(',') : [];
+
     return (
       <Modal transparent animationType="slide" visible onRequestClose={() => setFilterModal(null)}>
         <TouchableOpacity
@@ -322,15 +362,24 @@ export function BrowseView() {
           onPress={() => setFilterModal(null)}
         >
           <View style={[styles.modalContent, { backgroundColor: theme.surface }]}>
+            {/* Drag handle */}
+            <View style={styles.modalHandleRow}>
+              <View style={[styles.modalHandle, { backgroundColor: theme.border }]} />
+            </View>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: theme.text }]}>{title}</Text>
-              <TouchableOpacity onPress={() => setFilterModal(null)}>
-                <Ionicons name="close" size={24} color={theme.text} />
+              <TouchableOpacity
+                onPress={() => setFilterModal(null)}
+                style={[styles.modalCloseBtn, { backgroundColor: theme.surfaceElevated }]}
+              >
+                <Ionicons name="close" size={18} color={theme.textSecondary} />
               </TouchableOpacity>
             </View>
-            <ScrollView style={styles.modalScroll}>
+            <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
               {options.map((opt) => {
-                const isActive = filters[filterKey] === opt.value;
+                const isActive = isMulti
+                  ? selectedValues.includes(opt.value)
+                  : filters[filterKey] === opt.value;
                 return (
                   <TouchableOpacity
                     key={opt.value}
@@ -338,27 +387,68 @@ export function BrowseView() {
                       styles.modalOption,
                       {
                         backgroundColor: isActive ? theme.primaryMuted : 'transparent',
-                        borderColor: theme.border,
                       },
                     ]}
-                    onPress={() => toggleFilter(filterKey, opt.value)}
+                    onPress={() => {
+                      if (isMulti) {
+                        toggleMultiValue(filterKey, opt.value);
+                      } else {
+                        toggleFilter(filterKey, opt.value);
+                      }
+                    }}
+                    activeOpacity={0.6}
                   >
-                    <Text style={[styles.modalOptionText, { color: theme.text }]}>
-                      {filterKey === 'cuisine' && CUISINE_EMOJI[opt.value]
-                        ? `${CUISINE_EMOJI[opt.value]}  `
-                        : ''}
+                    {isMulti && (
+                      <View
+                        style={[
+                          styles.modalCheckbox,
+                          {
+                            borderColor: isActive ? theme.primary : theme.border,
+                            backgroundColor: isActive ? theme.primary : 'transparent',
+                          },
+                        ]}
+                      >
+                        {isActive && <Ionicons name="checkmark" size={14} color="#FFFFFF" />}
+                      </View>
+                    )}
+                    <Text style={[styles.modalOptionText, { color: isActive ? theme.primary : theme.text }]}>
                       {opt.label}
                     </Text>
                     {opt.count > 0 && (
-                      <Text style={[styles.modalOptionCount, { color: theme.textTertiary }]}>
-                        {opt.count}
-                      </Text>
+                      <View style={[styles.modalCountBadge, { backgroundColor: theme.surfaceElevated }]}>
+                        <Text style={[styles.modalOptionCount, { color: theme.textTertiary }]}>
+                          {opt.count}
+                        </Text>
+                      </View>
                     )}
-                    {isActive && <Ionicons name="checkmark" size={20} color={theme.primary} />}
+                    {!isMulti && isActive && <Ionicons name="checkmark-circle" size={22} color={theme.primary} />}
                   </TouchableOpacity>
                 );
               })}
+              <View style={{ height: 8 }} />
             </ScrollView>
+            {isMulti && (
+              <View style={styles.modalFooter}>
+                <TouchableOpacity
+                  style={[styles.modalFooterBtn, styles.modalClearBtn, { borderColor: theme.border }]}
+                  onPress={() => {
+                    setFilters((prev) => ({ ...prev, [filterKey]: undefined }));
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.modalFooterBtnText, { color: theme.textSecondary }]}>Clear</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalFooterBtn, styles.modalApplyBtn, { backgroundColor: theme.primary }]}
+                  onPress={() => setFilterModal(null)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.modalFooterBtnText, { color: '#FFFFFF' }]}>
+                    Apply{selectedValues.length > 0 ? ` (${selectedValues.length})` : ''}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         </TouchableOpacity>
       </Modal>
@@ -384,6 +474,45 @@ export function BrowseView() {
         )}
       </View>
 
+      {/* Category Toggle */}
+      <View style={styles.categoryRow}>
+        {CATEGORY_OPTIONS.map((cat) => {
+          const isActive = selectedCategory === cat.key;
+          return (
+            <TouchableOpacity
+              key={cat.label}
+              style={[
+                styles.categoryCard,
+                {
+                  backgroundColor: isActive
+                    ? theme.primary + '18'
+                    : theme.surfaceElevated,
+                  borderColor: isActive
+                    ? theme.primary
+                    : theme.border + '55',
+                },
+              ]}
+              onPress={() => setSelectedCategory(cat.key)}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={cat.icon}
+                size={22}
+                color={isActive ? theme.primary : theme.textSecondary}
+              />
+              <Text
+                style={[
+                  styles.categoryLabel,
+                  { color: isActive ? theme.primary : theme.text },
+                ]}
+              >
+                {cat.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
       {/* Filter Chips */}
       <ScrollView
         horizontal
@@ -391,12 +520,13 @@ export function BrowseView() {
         style={styles.filterRow}
         contentContainerStyle={styles.filterRowContent}
       >
-        {renderFilterChip('Cuisine', 'cuisine')}
-        {renderFilterChip('Meal Type', 'meal_type')}
-        {renderFilterChip('Flavor', 'flavor')}
+        {renderFilterChip('Protein', 'protein_type')}
+        {renderFilterChip('Carb', 'carb_type')}
         {renderFilterChip('Cook Time', 'cook_time')}
+        {renderFilterChip('Meal Type', 'meal_type')}
         {renderFilterChip('Dietary', 'dietary')}
         {renderFilterChip('Difficulty', 'difficulty')}
+        {renderFilterChip('Flavor', 'flavor')}
         {renderFilterChip('Health Benefit', 'health_benefit')}
         {activeFilterCount > 0 && (
           <TouchableOpacity style={styles.clearBtn} onPress={clearFilters}>
@@ -411,9 +541,26 @@ export function BrowseView() {
         <View style={styles.activePills}>
           {Object.entries(filters).map(([key, value]) => {
             if (!value) return null;
+            const isMulti = MULTI_SELECT_FILTERS.includes(key as keyof Filters);
+            if (isMulti) {
+              return value.split(',').map((v) => {
+                let label = v;
+                if (key === 'protein_type') label = PROTEIN_OPTIONS.find((p) => p.id === v)?.label || v;
+                else if (key === 'carb_type') label = CARB_OPTIONS.find((c) => c.id === v)?.label || v;
+                return (
+                  <TouchableOpacity
+                    key={`${key}-${v}`}
+                    style={[styles.activePill, { backgroundColor: theme.primaryMuted }]}
+                    onPress={() => toggleMultiValue(key as keyof Filters, v)}
+                  >
+                    <Text style={[styles.activePillText, { color: theme.primary }]}>{label}</Text>
+                    <Ionicons name="close" size={12} color={theme.primary} />
+                  </TouchableOpacity>
+                );
+              });
+            }
             let label = value;
-            if (key === 'cuisine') label = getCuisineLabel(value);
-            else if (key === 'health_benefit') label = getBenefitInfo(value)?.label || value;
+            if (key === 'health_benefit') label = getBenefitInfo(value)?.label || value;
             else if (key === 'cook_time') label = COOK_TIME_OPTIONS.find((c) => c.id === value)?.label || value;
             return (
               <TouchableOpacity
@@ -491,6 +638,26 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  categoryRow: {
+    flexDirection: 'row',
+    paddingHorizontal: Spacing.xl,
+    marginTop: Spacing.md,
+    gap: 10,
+  },
+  categoryCard: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    gap: 5,
+  },
+  categoryLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -498,7 +665,7 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
-    borderRadius: BorderRadius.md,
+    borderRadius: BorderRadius.full,
     borderWidth: 1,
     gap: Spacing.sm,
   },
@@ -526,6 +693,11 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: BorderRadius.full,
     borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
   },
   filterChipText: {
     fontSize: FontSize.sm,
@@ -582,22 +754,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: Spacing.md,
     gap: Spacing.sm,
-  },
-  cardCuisineBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 4,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 2,
-    borderRadius: BorderRadius.full,
-  },
-  cardCuisineEmoji: {
-    fontSize: 12,
-  },
-  cardCuisineText: {
-    fontSize: FontSize.xs,
-    fontWeight: '700',
   },
   cardTitle: {
     fontSize: FontSize.sm,
@@ -663,25 +819,49 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.4)',
     justifyContent: 'flex-end',
   },
   modalContent: {
-    borderTopLeftRadius: BorderRadius.xxl,
-    borderTopRightRadius: BorderRadius.xxl,
-    maxHeight: '70%',
-    paddingBottom: 40,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    maxHeight: '65%',
+    paddingBottom: 44,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 20,
+  },
+  modalHandleRow: {
+    alignItems: 'center',
+    paddingTop: 10,
+    paddingBottom: 2,
+  },
+  modalHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: Spacing.xl,
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.md,
     paddingBottom: Spacing.md,
   },
+  modalCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   modalTitle: {
-    fontSize: FontSize.xl,
+    fontSize: FontSize.lg,
     fontWeight: '800',
+    letterSpacing: -0.3,
   },
   modalScroll: {
     paddingHorizontal: Spacing.xl,
@@ -689,20 +869,60 @@ const styles = StyleSheet.create({
   modalOption: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.md,
-    borderRadius: BorderRadius.md,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 14,
     marginBottom: 4,
-    borderBottomWidth: 0.5,
+    gap: 10,
+  },
+  modalCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 7,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   modalOptionText: {
     fontSize: FontSize.md,
-    fontWeight: '500',
+    fontWeight: '600',
     flex: 1,
   },
+  modalCountBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginRight: 4,
+  },
   modalOptionCount: {
-    fontSize: FontSize.sm,
-    marginRight: Spacing.sm,
+    fontSize: FontSize.xs,
+    fontWeight: '600',
+  },
+  modalFooter: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.lg,
+    paddingBottom: Spacing.sm,
+  },
+  modalFooterBtn: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 14,
+    borderRadius: BorderRadius.full,
+  },
+  modalClearBtn: {
+    borderWidth: 1.5,
+  },
+  modalApplyBtn: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  modalFooterBtnText: {
+    fontSize: FontSize.md,
+    fontWeight: '700',
   },
 });

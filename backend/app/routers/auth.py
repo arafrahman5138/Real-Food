@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from datetime import datetime
 from app.db import get_db
-from app.auth import get_password_hash, verify_password, create_access_token, get_current_user
+from app.auth import get_password_hash, verify_password, create_access_token, create_token_pair, verify_refresh_token, get_current_user
 from app.models.user import User
 from app.schemas.auth import UserRegister, UserLogin, Token, UserProfile, UserPreferencesUpdate, SocialAuthRequest
 
@@ -40,8 +41,8 @@ async def register(user_data: UserRegister, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    token = create_access_token(data={"sub": str(user.id)})
-    return {"access_token": token, "token_type": "bearer"}
+    token = create_token_pair(str(user.id))
+    return token
 
 
 @router.post("/login", response_model=Token)
@@ -52,8 +53,8 @@ async def login(user_data: UserLogin, db: Session = Depends(get_db)):
     if not verify_password(user_data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = create_access_token(data={"sub": str(user.id)})
-    return {"access_token": token, "token_type": "bearer"}
+    token = create_token_pair(str(user.id))
+    return token
 
 
 @router.post("/social", response_model=Token)
@@ -69,8 +70,26 @@ async def social_auth(auth_data: SocialAuthRequest, db: Session = Depends(get_db
         db.commit()
         db.refresh(user)
 
-    token = create_access_token(data={"sub": str(user.id)})
-    return {"access_token": token, "token_type": "bearer"}
+    token = create_token_pair(str(user.id))
+    return token
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/refresh", response_model=Token)
+async def refresh_token(body: RefreshRequest, db: Session = Depends(get_db)):
+    """Exchange a valid refresh token for a new access + refresh token pair."""
+    user_id = verify_refresh_token(body.refresh_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    return create_token_pair(str(user.id))
 
 
 @router.get("/me", response_model=UserProfile)

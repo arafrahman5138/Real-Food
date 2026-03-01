@@ -28,6 +28,8 @@ def _serialize_recipe_card(r: Recipe) -> dict:
         "flavor_profile": r.flavor_profile or [],
         "dietary_tags": r.dietary_tags or [],
         "health_benefits": r.health_benefits or [],
+        "protein_type": r.protein_type or [],
+        "carb_type": r.carb_type or [],
         "nutrition_info": r.nutrition_info or {},
         "servings": r.servings,
     }
@@ -52,22 +54,45 @@ def _json_contains(column_value, search_value: str) -> bool:
     return search_value.lower() in [str(v).lower() for v in items]
 
 
+# Category aliases — "meal-prep" and "bulk-cook"/"bulk_cook" are the same thing
+CATEGORY_ALIASES: dict[str, set[str]] = {
+    "quick": {"quick"},
+    "meal-prep": {"meal-prep", "meal_prep", "bulk-cook", "bulk_cook"},
+    "sit-down": {"sit-down", "sit_down"},
+}
+
+# Only real meal-type values (not category / meta tags)
+MEAL_TYPE_WHITELIST = {"breakfast", "lunch", "dinner", "snack", "condiment", "dessert"}
+
+
 @router.get("/browse")
 async def browse_recipes(
     q: Optional[str] = None,
     cuisine: Optional[str] = None,
     meal_type: Optional[str] = None,
+    category: Optional[str] = None,
     flavor: Optional[str] = None,
     dietary: Optional[str] = None,
     cook_time: Optional[str] = None,
     difficulty: Optional[str] = None,
     health_benefit: Optional[str] = None,
+    protein_type: Optional[str] = None,
+    carb_type: Optional[str] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=50),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     all_recipes = db.query(Recipe).all()
+
+    # Parse comma-separated multi-select values
+    protein_values = [v.strip().lower() for v in protein_type.split(",") if v.strip()] if protein_type else []
+    carb_values = [v.strip().lower() for v in carb_type.split(",") if v.strip()] if carb_type else []
+
+    # Resolve category filter to a set of matching tag values
+    category_matches: set[str] | None = None
+    if category:
+        category_matches = CATEGORY_ALIASES.get(category.lower(), {category.lower()})
 
     filtered = []
     for r in all_recipes:
@@ -77,6 +102,10 @@ async def browse_recipes(
             continue
         if meal_type and not _json_contains(r.tags, meal_type):
             continue
+        if category_matches:
+            tags_lower = {str(t).lower() for t in (r.tags or [])}
+            if not category_matches & tags_lower:
+                continue
         if flavor and not _json_contains(r.flavor_profile, flavor):
             continue
         if dietary and not _json_contains(r.dietary_tags, dietary):
@@ -92,6 +121,14 @@ async def browse_recipes(
             elif cook_time == "medium" and (total <= 30 or total > 60):
                 continue
             elif cook_time == "long" and total <= 60:
+                continue
+        if protein_values:
+            recipe_proteins = [v.lower() for v in (r.protein_type or [])]
+            if not any(pv in recipe_proteins for pv in protein_values):
+                continue
+        if carb_values:
+            recipe_carbs = [v.lower() for v in (r.carb_type or [])]
+            if not any(cv in recipe_carbs for cv in carb_values):
                 continue
 
         filtered.append(r)
@@ -117,19 +154,17 @@ async def get_recipe_filters(
 ):
     all_recipes = db.query(Recipe).all()
 
-    cuisines: dict[str, int] = {}
     meal_types: dict[str, int] = {}
     flavors: dict[str, int] = {}
     dietary: dict[str, int] = {}
     difficulties: dict[str, int] = {}
     health_benefits: dict[str, int] = {}
+    protein_types: dict[str, int] = {}
+    carb_types: dict[str, int] = {}
 
     for r in all_recipes:
-        c = (r.cuisine or "american").lower()
-        cuisines[c] = cuisines.get(c, 0) + 1
-
         for tag in (r.tags or []):
-            if tag:
+            if tag and tag.lower() in MEAL_TYPE_WHITELIST:
                 meal_types[tag] = meal_types.get(tag, 0) + 1
 
         for f in (r.flavor_profile or []):
@@ -147,6 +182,14 @@ async def get_recipe_filters(
             if hb:
                 health_benefits[hb] = health_benefits.get(hb, 0) + 1
 
+        for pt in (r.protein_type or []):
+            if pt:
+                protein_types[pt] = protein_types.get(pt, 0) + 1
+
+        for ct in (r.carb_type or []):
+            if ct:
+                carb_types[ct] = carb_types.get(ct, 0) + 1
+
     def to_list(d: dict) -> list:
         return sorted(
             [{"value": k, "label": HEALTH_BENEFIT_LABELS.get(k, k.replace("_", " ").title()), "count": v} for k, v in d.items()],
@@ -154,12 +197,13 @@ async def get_recipe_filters(
         )
 
     return {
-        "cuisines": to_list(cuisines),
         "meal_types": to_list(meal_types),
         "flavors": to_list(flavors),
         "dietary": to_list(dietary),
         "difficulties": to_list(difficulties),
         "health_benefits": to_list(health_benefits),
+        "protein_types": to_list(protein_types),
+        "carb_types": to_list(carb_types),
         "total_recipes": len(all_recipes),
     }
 

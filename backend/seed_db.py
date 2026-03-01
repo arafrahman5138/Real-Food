@@ -11,6 +11,77 @@ from app.seed_meals import SEED_MEALS
 from app.seed_meals_global import GLOBAL_MEALS
 from app.nutrition_tags import compute_health_benefits
 
+# ── protein / carb classification maps ─────────────────────────
+PROTEIN_KEYWORDS: dict[str, list[str]] = {
+    "chicken":    ["chicken", "cornish game hen"],
+    "beef":       ["beef", "ribeye", "flank steak", "short ribs", "stew meat", "bison", "oxtail", "liver"],
+    "lamb":       ["lamb", "goat"],
+    "pork":       ["pork", "bacon", "pancetta", "prosciutto", "sausage", "duck"],
+    "salmon":     ["salmon"],
+    "shrimp":     ["shrimp", "scallop"],
+    "other_fish": ["tuna", "cod", "tilapia", "sole", "sardine", "mackerel", "trout", "fish"],
+    "eggs":       ["egg"],
+    "vegetarian": ["chickpea", "lentil", "bean", "tofu", "edamame"],
+}
+
+CARB_KEYWORDS: dict[str, list[str]] = {
+    "rice":            ["rice"],
+    "sweet_potato":    ["sweet potato"],
+    "potato":          ["potato", "russet"],
+    "sourdough_bread": ["sourdough", "bread", "rye bread"],
+    "oats":            ["oats", "steel-cut", "rolled oats"],
+    "quinoa":          ["quinoa"],
+    "tortillas":       ["tortilla", "pita"],
+    "noodles":         ["noodle", "soba", "vermicelli", "glass noodle", "pasta"],
+    "plantain":        ["plantain"],
+}
+
+# Carb terms that override the "rice" keyword inside noodle/wrapper names
+_NOODLE_HINTS = {"noodle", "vermicelli", "paper", "wrapper"}
+
+
+def _classify_proteins(ingredients: list[dict]) -> list[str]:
+    """Return sorted, deduplicated protein_type tags for a recipe."""
+    tags: set[str] = set()
+    for ing in ingredients:
+        if (ing.get("category") or "").lower() != "protein":
+            continue
+        name = (ing.get("name") or "").lower()
+        for tag, keywords in PROTEIN_KEYWORDS.items():
+            if any(kw in name for kw in keywords):
+                tags.add(tag)
+    return sorted(tags)
+
+
+def _classify_carbs(ingredients: list[dict]) -> list[str]:
+    """Return sorted, deduplicated carb_type tags for a recipe."""
+    tags: set[str] = set()
+    for ing in ingredients:
+        cat = (ing.get("category") or "").lower()
+        name = (ing.get("name") or "").lower()
+        # Only consider grains + starchy produce
+        if cat not in ("grains", "produce"):
+            continue
+        if cat == "produce":
+            # Only match explicit starchy produce
+            if "sweet potato" in name:
+                tags.add("sweet_potato")
+            elif "potato" in name or "russet" in name:
+                tags.add("potato")
+            elif "plantain" in name:
+                tags.add("plantain")
+            continue
+        # cat == "grains"
+        # Check noodle-like items first to avoid false "rice" match
+        if any(h in name for h in _NOODLE_HINTS):
+            tags.add("noodles")
+            continue
+        for tag, keywords in CARB_KEYWORDS.items():
+            if any(kw in name for kw in keywords):
+                tags.add(tag)
+                break  # one tag per ingredient
+    return sorted(tags)
+
 CUISINE_DEFAULTS = {
     "american": [
         "Avocado Toast", "Greek Yogurt", "Banana Almond Butter", "Overnight Oats",
@@ -120,6 +191,8 @@ def _build_recipe(meal: dict) -> Recipe:
         cuisine=cuisine,
         health_benefits=health,
         is_ai_generated=False,
+        protein_type=_classify_proteins(meal.get("ingredients", [])),
+        carb_type=_classify_carbs(meal.get("ingredients", [])),
     )
 
 
@@ -150,6 +223,9 @@ def seed_recipes():
                     if meal.get("nutrition_estimate"):
                         existing.nutrition_info = meal["nutrition_estimate"]
                     updated += 1
+                # Always refresh protein / carb tags
+                existing.protein_type = _classify_proteins(meal.get("ingredients", []))
+                existing.carb_type = _classify_carbs(meal.get("ingredients", []))
                 continue
 
             db.add(_build_recipe(meal))

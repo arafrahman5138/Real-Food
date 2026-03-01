@@ -17,6 +17,7 @@ from app.schemas.nutrition import (
     FoodLogResponse,
     DailyNutritionResponse,
 )
+from app.achievements_engine import award_xp, update_nutrition_streak, check_achievements
 
 router = APIRouter()
 
@@ -299,7 +300,15 @@ async def create_log(
     db.commit()
     db.refresh(log)
 
-    _compute_daily(db, current_user.id, day)
+    _, _, daily_score, _ = _compute_daily(db, current_user.id, day)
+
+    # ── Gamification hooks ──
+    # +50 XP for logging a meal
+    award_xp(db, current_user, 50, "meal_log")
+    # Update nutrition streak based on new daily score
+    update_nutrition_streak(db, current_user, daily_score, day)
+    # Check achievements (food_log_count, nutrition_streak, tier achievements, etc.)
+    check_achievements(db, current_user)
 
     return _serialize_log(log)
 

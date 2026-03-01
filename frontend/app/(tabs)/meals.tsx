@@ -6,14 +6,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../hooks/useTheme';
 import { BrowseView } from '../../components/MealsTab/BrowseView';
 import { MyPlanView } from '../../components/MealsTab/MyPlanView';
+import { SavedView } from '../../components/MealsTab/SavedView';
 import { GroceryView } from '../../components/MealsTab/GroceryView';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
 
-type Tab = 'browse' | 'plan' | 'grocery';
+type Tab = 'browse' | 'plan' | 'saved' | 'grocery';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'browse', label: 'Browse' },
   { id: 'plan', label: 'My Plan' },
+  { id: 'saved', label: 'Saved' },
   { id: 'grocery', label: 'Grocery' },
 ];
 
@@ -32,7 +34,7 @@ export default function MealsScreen() {
 
   // Handle deep-linking from quick actions
   useEffect(() => {
-    if (params.tab && ['browse', 'plan', 'grocery'].includes(params.tab)) {
+    if (params.tab && ['browse', 'plan', 'saved', 'grocery'].includes(params.tab)) {
       setActiveTab(params.tab as Tab);
     }
   }, [params.tab]);
@@ -43,6 +45,8 @@ export default function MealsScreen() {
         return <BrowseView />;
       case 'plan':
         return <MyPlanView />;
+      case 'saved':
+        return <SavedView />;
       case 'grocery':
         return <GroceryView />;
       default:

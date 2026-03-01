@@ -7,15 +7,18 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
+  LayoutAnimation,
+  Platform,
+  UIManager,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, Stack, router } from 'expo-router';
 import { useTheme } from '../../hooks/useTheme';
-import { nutritionApi, recipeApi } from '../../services/api';
+import LogoHeader from '../../components/LogoHeader';
+import { nutritionApi, recipeApi, gameApi } from '../../services/api';
 import { useSavedRecipesStore } from '../../stores/savedRecipesStore';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
-import { HEALTH_BENEFIT_OPTIONS, CUISINE_OPTIONS } from '../../constants/Config';
-import { CUISINE_EMOJI } from '../../constants/Recipes';
+import { HEALTH_BENEFIT_OPTIONS } from '../../constants/Config';
 
 interface Ingredient {
   name: string;
@@ -50,6 +53,21 @@ const MACRO_COLORS = {
   fiber: '#8B5CF6',
 };
 
+const INGREDIENT_CATEGORIES: Record<string, { label: string; icon: string; color: string; order: number }> = {
+  protein: { label: 'Protein', icon: 'fish-outline', color: '#EF4444', order: 0 },
+  produce: { label: 'Produce', icon: 'leaf-outline', color: '#22C55E', order: 1 },
+  dairy:   { label: 'Dairy', icon: 'water-outline', color: '#3B82F6', order: 2 },
+  grains:  { label: 'Grains', icon: 'nutrition-outline', color: '#F59E0B', order: 3 },
+  fats:    { label: 'Fats & Oils', icon: 'flask-outline', color: '#A855F7', order: 4 },
+  spices:  { label: 'Spices & Seasonings', icon: 'flame-outline', color: '#F97316', order: 5 },
+  sweetener: { label: 'Sweeteners', icon: 'cafe-outline', color: '#EC4899', order: 6 },
+  other:   { label: 'Other', icon: 'cube-outline', color: '#6B7280', order: 7 },
+};
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
 export default function RecipeDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const theme = useTheme();
@@ -64,6 +82,7 @@ export default function RecipeDetailScreen() {
   const [loggingMeal, setLoggingMeal] = useState(false);
   const [logSuccess, setLogSuccess] = useState(false);
   const [checkedIngredients, setCheckedIngredients] = useState<Set<number>>(new Set());
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
   const { isSaved, saveRecipe, removeRecipe } = useSavedRecipesStore();
   const saved = id ? isSaved(id) : false;
 
@@ -71,28 +90,43 @@ export default function RecipeDetailScreen() {
     if (id) {
       recipeApi
         .getDetail(id)
-        .then(setRecipe)
+        .then((data) => {
+          setRecipe(data);
+          // Award XP for browsing a recipe detail (fire-and-forget)
+          gameApi.awardXP(5, 'browse_recipe').catch(() => {});
+        })
         .catch(console.error)
         .finally(() => setLoading(false));
     }
   }, [id]);
 
-  const toggleIngredient = (index: number) => {
+  const toggleIngredient = (index: number, categoryKey: string, groupIndices: number[]) => {
     setCheckedIngredients((prev) => {
       const next = new Set(prev);
       if (next.has(index)) next.delete(index);
       else next.add(index);
+      // Auto-collapse when all items in this category are checked
+      const allChecked = groupIndices.every((i) => next.has(i));
+      if (allChecked) {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setCollapsedCategories((p) => new Set(p).add(categoryKey));
+      }
+      return next;
+    });
+  };
+
+  const toggleCategory = (key: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setCollapsedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
 
   const getBenefitInfo = (hbId: string) =>
     HEALTH_BENEFIT_OPTIONS.find((h) => h.id === hbId);
-
-  const getCuisineLabel = (cId: string) => {
-    if (!cId) return 'Unknown';
-    return CUISINE_OPTIONS.find((c) => c.id === cId)?.label || cId.replace(/_/g, ' ');
-  };
 
   const handleCustomizeIngredients = async () => {
     if (!id) return;
@@ -199,7 +233,15 @@ export default function RecipeDetailScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ headerTitle: activeRecipe.title.length > 24 ? activeRecipe.title.slice(0, 24) + '...' : activeRecipe.title }} />
+      <Stack.Screen options={{
+        headerTitle: () => <LogoHeader />,
+        headerBackTitleVisible: false,
+        headerLeft: () => (
+          <TouchableOpacity onPress={() => router.back()} hitSlop={8}>
+            <Ionicons name="chevron-back" size={28} color={theme.text} />
+          </TouchableOpacity>
+        ),
+      }} />
       <ScrollView
         style={[styles.container, { backgroundColor: theme.background }]}
         contentContainerStyle={styles.scrollContent}
@@ -207,13 +249,6 @@ export default function RecipeDetailScreen() {
       >
         {/* Header */}
         <View style={styles.header}>
-          <View style={[styles.cuisineBadge, { backgroundColor: theme.primaryMuted }]}>
-            <Text style={styles.cuisineEmoji}>{CUISINE_EMOJI[activeRecipe.cuisine] || '🍽️'}</Text>
-            <Text style={[styles.cuisineText, { color: theme.primary }]}>
-              {getCuisineLabel(activeRecipe.cuisine)}
-            </Text>
-          </View>
-
           <View style={styles.titleRow}>
             <Text style={[styles.title, { color: theme.text, flex: 1 }]}>{activeRecipe.title}</Text>
             <TouchableOpacity
@@ -419,42 +454,114 @@ export default function RecipeDetailScreen() {
 
         {/* Ingredients */}
         <View style={[styles.section, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-          <Text style={[styles.sectionTitle, { color: theme.text }]}>
-            Ingredients ({activeRecipe.ingredients.length})
-          </Text>
-          {activeRecipe.ingredients.map((ing, idx) => (
-            <TouchableOpacity
-              key={idx}
-              style={styles.ingredientRow}
-              onPress={() => toggleIngredient(idx)}
-              activeOpacity={0.7}
-            >
-              <View
-                style={[
-                  styles.checkbox,
-                  {
-                    borderColor: checkedIngredients.has(idx) ? theme.primary : theme.border,
-                    backgroundColor: checkedIngredients.has(idx) ? theme.primary : 'transparent',
-                  },
-                ]}
-              >
-                {checkedIngredients.has(idx) && (
-                  <Ionicons name="checkmark" size={12} color="#FFFFFF" />
-                )}
-              </View>
-              <Text
-                style={[
-                  styles.ingredientText,
-                  {
-                    color: checkedIngredients.has(idx) ? theme.textTertiary : theme.text,
-                    textDecorationLine: checkedIngredients.has(idx) ? 'line-through' : 'none',
-                  },
-                ]}
-              >
-                {ing.quantity} {ing.unit} {ing.name}
-              </Text>
-            </TouchableOpacity>
-          ))}
+          <View style={styles.ingredientHeaderRow}>
+            <Text style={[styles.sectionTitle, { color: theme.text, marginBottom: 0 }]}>
+              Ingredients
+            </Text>
+            <Text style={[styles.ingredientCounter, { color: theme.textTertiary }]}>
+              {checkedIngredients.size}/{activeRecipe.ingredients.length}
+            </Text>
+          </View>
+
+          {(() => {
+            // Group ingredients by category
+            const groups: Record<string, { ing: Ingredient; idx: number }[]> = {};
+            activeRecipe.ingredients.forEach((ing, idx) => {
+              const cat = ing.category && INGREDIENT_CATEGORIES[ing.category] ? ing.category : 'other';
+              if (!groups[cat]) groups[cat] = [];
+              groups[cat].push({ ing, idx });
+            });
+            const sortedKeys = Object.keys(groups).sort(
+              (a, b) => (INGREDIENT_CATEGORIES[a]?.order ?? 99) - (INGREDIENT_CATEGORIES[b]?.order ?? 99)
+            );
+
+            return sortedKeys.map((catKey) => {
+              const catInfo = INGREDIENT_CATEGORIES[catKey] || INGREDIENT_CATEGORIES.other;
+              const items = groups[catKey];
+              const groupIndices = items.map((i) => i.idx);
+              const checkedCount = groupIndices.filter((i) => checkedIngredients.has(i)).length;
+              const allDone = checkedCount === items.length;
+              const isCollapsed = collapsedCategories.has(catKey);
+
+              return (
+                <View key={catKey} style={styles.ingredientGroup}>
+                  <TouchableOpacity
+                    style={styles.categoryHeader}
+                    onPress={() => toggleCategory(catKey)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={[styles.categoryPill, { backgroundColor: catInfo.color + '18' }]}>
+                      <Ionicons name={catInfo.icon as any} size={14} color={catInfo.color} />
+                      <Text style={[styles.categoryLabel, { color: catInfo.color }]}>
+                        {catInfo.label}
+                      </Text>
+                    </View>
+                    <View style={styles.categoryRight}>
+                      <Text
+                        style={[
+                          styles.categoryCount,
+                          { color: allDone ? theme.primary : theme.textTertiary },
+                        ]}
+                      >
+                        {checkedCount}/{items.length}
+                      </Text>
+                      {allDone && (
+                        <Ionicons name="checkmark-circle" size={16} color={theme.primary} />
+                      )}
+                      <Ionicons
+                        name={isCollapsed ? 'chevron-forward' : 'chevron-down'}
+                        size={16}
+                        color={theme.textTertiary}
+                      />
+                    </View>
+                  </TouchableOpacity>
+
+                  {!isCollapsed &&
+                    items.map(({ ing, idx }) => (
+                      <TouchableOpacity
+                        key={idx}
+                        style={styles.ingredientRow}
+                        onPress={() => toggleIngredient(idx, catKey, groupIndices)}
+                        activeOpacity={0.7}
+                      >
+                        <View
+                          style={[
+                            styles.checkbox,
+                            {
+                              borderColor: checkedIngredients.has(idx)
+                                ? theme.primary
+                                : theme.border,
+                              backgroundColor: checkedIngredients.has(idx)
+                                ? theme.primary
+                                : 'transparent',
+                            },
+                          ]}
+                        >
+                          {checkedIngredients.has(idx) && (
+                            <Ionicons name="checkmark" size={12} color="#FFFFFF" />
+                          )}
+                        </View>
+                        <Text
+                          style={[
+                            styles.ingredientText,
+                            {
+                              color: checkedIngredients.has(idx)
+                                ? theme.textTertiary
+                                : theme.text,
+                              textDecorationLine: checkedIngredients.has(idx)
+                                ? 'line-through'
+                                : 'none',
+                            },
+                          ]}
+                        >
+                          {ing.quantity} {ing.unit} {ing.name}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                </View>
+              );
+            });
+          })()}
         </View>
 
         {/* Steps */}
@@ -475,7 +582,7 @@ export default function RecipeDetailScreen() {
               <View style={[styles.stepNumber, { backgroundColor: theme.primaryMuted }]}>
                 <Text style={[styles.stepNumberText, { color: theme.primary }]}>{idx + 1}</Text>
               </View>
-              <Text style={[styles.stepText, { color: theme.text }]}>{step}</Text>
+              <Text style={[styles.stepText, { color: theme.text }]}>{step.replace(/^Step\s*\d+\s*:\s*/i, '')}</Text>
             </View>
           ))}
         </View>
@@ -534,22 +641,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.xl,
     paddingTop: Spacing.lg,
     gap: Spacing.sm,
-  },
-  cuisineBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 6,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: BorderRadius.full,
-  },
-  cuisineEmoji: {
-    fontSize: 16,
-  },
-  cuisineText: {
-    fontSize: FontSize.sm,
-    fontWeight: '700',
   },
   titleRow: {
     flexDirection: 'row',
@@ -770,11 +861,54 @@ const styles = StyleSheet.create({
     width: 55,
     textAlign: 'right',
   },
+  ingredientHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.md,
+  },
+  ingredientCounter: {
+    fontSize: FontSize.sm,
+    fontWeight: '600',
+  },
+  ingredientGroup: {
+    marginBottom: Spacing.sm,
+  },
+  categoryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: Spacing.sm,
+    marginBottom: 2,
+  },
+  categoryPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 5,
+    borderRadius: BorderRadius.full,
+  },
+  categoryLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  categoryRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  categoryCount: {
+    fontSize: FontSize.xs,
+    fontWeight: '600',
+  },
   ingredientRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.md,
     paddingVertical: Spacing.sm,
+    paddingLeft: Spacing.sm,
   },
   checkbox: {
     width: 22,

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { recipeApi } from '../services/api';
+import { recipeApi, gameApi } from '../services/api';
 
 export interface SavedRecipe {
   id: string;
@@ -53,6 +53,8 @@ export const useSavedRecipesStore = create<SavedRecipesState>((set, get) => ({
     try {
       const result = await recipeApi.save(id);
       get().fetchSaved();
+      // Award XP for saving a recipe
+      gameApi.awardXP(10, 'save_recipe').catch(() => {});
       return result;
     } catch {
       set((s) => {
@@ -79,6 +81,8 @@ export const useSavedRecipesStore = create<SavedRecipesState>((set, get) => ({
         nutrition_info: recipe.nutrition_info,
       });
       await get().fetchSaved();
+      // Award XP for saving a generated recipe
+      gameApi.awardXP(10, 'save_recipe').catch(() => {});
       return result?.recipe_id || null;
     } catch {
       return null;

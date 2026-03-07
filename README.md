@@ -11,6 +11,37 @@ Eat real. Feel amazing. A mobile app that helps busy professionals transform the
 5. **Food Database** - Searchable nutrition database powered by USDA FoodData Central
 6. **Gamification** - XP, streaks, achievements, and leaderboards to keep you motivated
 
+## Planned Feature: Metabolic Budget (MES)
+
+We are adding a **Metabolic Energy Score (MES)** system to make metabolic health the primary daily metric.
+
+### What MES Optimizes
+- **Protein target** (primary driver)
+- **Fiber floor**
+- **Sugar ceiling**
+
+> Prep time is intentionally **not** part of MES so the app supports quick meals, meal prep, desserts, and sit-down meals equally.
+
+### Product Direction
+- **MES is the primary score on Home ("Today")**
+- Existing NutriScore remains in Chronometer as a **secondary deep-dive metric**
+- Gamification (quests, streaks, achievements, XP) centers on MES and metabolic consistency
+
+### Scoring Philosophy
+- Protein is weighted highest and is the main lever for a high MES
+- Fiber and sugar complete the score for stability and crash prevention
+- Users should not be able to score highly without hitting protein goals
+
+### Meal Plan + Data Quality
+- Meal plan generation behavior stays the same
+- We add a **projected MES** for generated plans
+- Recipe import pipeline includes an **MES gate** so the database only contains metabolically healthy meals
+
+### Rollout (High Level)
+1. Core MES models + scoring engine + API
+2. Home/Chronometer UI integration + recipe-level MES visibility
+3. Full gamification integration + projected MES in meal plans
+
 ## Tech Stack
 
 ### Frontend

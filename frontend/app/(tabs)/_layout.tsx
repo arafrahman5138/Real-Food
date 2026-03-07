@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../hooks/useTheme';
 import { FontSize } from '../../constants/Colors';
 import { useAuthStore } from '../../stores/authStore';
+import { GlassTabBar } from '../../components/GlassTabBar';
 
 export default function TabLayout() {
   const theme = useTheme();
@@ -23,16 +24,10 @@ export default function TabLayout() {
 
   return (
     <Tabs
+      tabBar={(props) => <GlassTabBar {...props} />}
       screenOptions={{
         headerShown: false,
-        tabBarStyle: {
-          backgroundColor: theme.tabBar.background,
-          borderTopColor: theme.tabBar.border,
-          borderTopWidth: 1,
-          height: 88,
-          paddingTop: 8,
-          paddingBottom: 28,
-        },
+        // Keep these for the custom bar to read
         tabBarActiveTintColor: theme.tabBar.active,
         tabBarInactiveTintColor: theme.tabBar.inactive,
         tabBarLabelStyle: {
@@ -53,7 +48,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="meals"
         options={{
-          title: 'Meals',
+          title: 'Eat',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="restaurant" size={size} color={color} />
           ),

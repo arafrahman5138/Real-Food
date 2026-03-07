@@ -27,11 +27,23 @@ IMPORTANT RULES:
 - Match the user's flavor preferences.
 - Each meal should have variety throughout the week.
 
+METABOLIC ENERGY BUDGET RULES (critical — follow precisely):
+- Each meal MUST target the per-meal macros provided in the user message.
+- protein_target_per_meal: aim to meet or exceed this in every meal.
+- fiber_floor_per_meal: aim to meet or exceed this in every meal.
+- sugar_ceiling_per_meal: stay at or below this in every meal.
+- Prioritize protein-rich whole foods (eggs, fish, poultry, legumes, Greek yogurt).
+- Include high-fiber vegetables, beans, and whole grains in every meal.
+- Avoid fruits high in sugar (bananas, grapes, mangos); prefer berries and citrus.
+- The daily total should hit the full daily targets provided.
+
 Respond with a JSON object with this structure:
 {
+  "projected_weekly_mes": 85,
   "days": [
     {
       "day": "Monday",
+      "projected_daily_mes": 82,
       "meals": [
         {
           "meal_type": "breakfast|lunch|dinner|snack",
@@ -54,7 +66,8 @@ Respond with a JSON object with this structure:
               "protein": 25,
               "carbs": 45,
               "fat": 15,
-              "fiber": 8
+              "fiber": 8,
+              "sugar": 4
             }
           }
         }
@@ -69,6 +82,16 @@ async def generate_plan(state: MealPlanState) -> MealPlanState:
     llm = get_llm()
     prefs = state["preferences"]
 
+    # Metabolic budget constraints (injected from caller or defaults)
+    protein_daily = prefs.get("metabolic_protein_target_g", 130)
+    fiber_daily = prefs.get("metabolic_fiber_floor_g", 30)
+    sugar_daily = prefs.get("metabolic_sugar_ceiling_g", 200)
+    meals_per_day = prefs.get("meals_per_day", 3)
+
+    protein_per_meal = round(protein_daily / meals_per_day, 1)
+    fiber_per_meal = round(fiber_daily / meals_per_day, 1)
+    sugar_per_meal = round(sugar_daily / meals_per_day, 1)
+
     user_message = f"""Create a weekly meal plan with these preferences:
 - Flavor preferences: {', '.join(prefs.get('flavor_preferences', ['varied']))}
 - Dietary restrictions: {', '.join(prefs.get('dietary_restrictions', ['none']))}
@@ -77,7 +100,13 @@ async def generate_plan(state: MealPlanState) -> MealPlanState:
 - Household size (servings): {prefs.get('household_size', 1)}
 - Budget level: {prefs.get('budget_level', 'medium')}
 - Include bulk cooking: {prefs.get('bulk_cook_preference', True)}
-- Meals per day: {prefs.get('meals_per_day', 3)}
+- Meals per day: {meals_per_day}
+
+METABOLIC ENERGY BUDGET (must follow):
+- Daily protein target: {protein_daily}g (≥{protein_per_meal}g per meal)
+- Daily fiber floor: {fiber_daily}g (≥{fiber_per_meal}g per meal)
+- Daily sugar ceiling: {sugar_daily}g (≤{sugar_per_meal}g per meal)
+- Target weekly MES: ≥ 80 (Stable Energy or better every day)
 """
 
     messages = [
@@ -101,26 +130,55 @@ def build_meal_plan_graph():
 graph = build_meal_plan_graph()
 
 
-async def generate_meal_plan_agent(preferences: dict) -> dict:
-    state = {
-        "preferences": preferences,
-        "meal_plan": {},
-        "final_response": "",
-    }
+async def generate_meal_plan_agent(preferences: dict, db=None, user_id: str | None = None) -> dict:
+    """Generate a meal plan, injecting metabolic budget constraints if user available."""
+    # Inject metabolic budget from DB if available
+    if db and user_id:
+        from app.services.metabolic_engine import get_or_create_budget
+        budget = get_or_create_budget(db, user_id)
+        preferences.setdefault("metabolic_protein_target_g", budget.protein_target_g)
+        preferences.setdefault("metabolic_fiber_floor_g", budget.fiber_floor_g)
+        preferences.setdefault("metabolic_sugar_ceiling_g", budget.sugar_ceiling_g)
 
-    result = await graph.ainvoke(state)
-    response_text = result.get("final_response", "")
+    MAX_ATTEMPTS = 3
+    MIN_WEEKLY_MES = 80
 
+    for attempt in range(MAX_ATTEMPTS):
+        state = {
+            "preferences": preferences,
+            "meal_plan": {},
+            "final_response": "",
+        }
+
+        result = await graph.ainvoke(state)
+        response_text = result.get("final_response", "")
+
+        parsed = _parse_plan_json(response_text)
+
+        # Validate projected weekly MES if present
+        projected = parsed.get("projected_weekly_mes", 0)
+        if projected >= MIN_WEEKLY_MES or attempt == MAX_ATTEMPTS - 1:
+            return parsed
+
+        # Retry with stricter instruction
+        preferences["_retry_hint"] = (
+            f"Previous plan scored {projected} MES — below the {MIN_WEEKLY_MES} minimum. "
+            "Increase protein and fiber, reduce sugar in every meal."
+        )
+
+    return parsed
+
+
+def _parse_plan_json(response_text: str) -> dict:
+    """Extract JSON from LLM response text."""
     try:
-        parsed = json.loads(response_text)
-        return parsed
+        return json.loads(response_text)
     except json.JSONDecodeError:
         start = response_text.find("{")
         end = response_text.rfind("}") + 1
         if start != -1 and end > start:
             try:
-                parsed = json.loads(response_text[start:end])
-                return parsed
+                return json.loads(response_text[start:end])
             except json.JSONDecodeError:
                 pass
         return {"days": [], "error": "Failed to parse meal plan"}

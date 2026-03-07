@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.models.gamification import Achievement, UserAchievement, XPTransaction, NutritionStreak
 from app.models.nutrition import DailyNutritionSummary, FoodLog
+from app.models.metabolic import MetabolicBudget, MetabolicScore, MetabolicStreak
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -285,6 +286,116 @@ ACHIEVEMENT_DEFS = [
         "category": "nutrition",
         "criteria": {"type": "whole_food_week", "meal_count": 21},
     },
+    # ═══════════════════════════════════
+    # NEW — Metabolic (MES) achievements
+    # ═══════════════════════════════════
+    # ── Energy Streaks ──
+    {
+        "name": "Stable Monday",
+        "description": "Achieve 'Stable Energy' or better for your first day.",
+        "icon": "battery-charging",
+        "xp_reward": 100,
+        "category": "metabolic",
+        "criteria": {"type": "metabolic_days_stable", "target": 1},
+    },
+    {
+        "name": "Full Power Week",
+        "description": "Hit 'Full Power' (MES ≥ 80) for 5 days in a week.",
+        "icon": "battery-full",
+        "xp_reward": 500,
+        "category": "metabolic",
+        "criteria": {"type": "metabolic_days_optimal", "target": 5},
+    },
+    {
+        "name": "Energy Streak: Bronze",
+        "description": "Maintain Stable Energy for 3 consecutive days.",
+        "icon": "flash",
+        "xp_reward": 150,
+        "category": "metabolic",
+        "criteria": {"type": "metabolic_streak", "target": 3},
+    },
+    {
+        "name": "Energy Streak: Silver",
+        "description": "Maintain Stable Energy for 7 consecutive days.",
+        "icon": "flash",
+        "xp_reward": 400,
+        "category": "metabolic",
+        "criteria": {"type": "metabolic_streak", "target": 7},
+    },
+    {
+        "name": "Energy Streak: Gold",
+        "description": "Maintain Stable Energy for 14 consecutive days.",
+        "icon": "flash",
+        "xp_reward": 800,
+        "category": "metabolic",
+        "criteria": {"type": "metabolic_streak", "target": 14},
+    },
+    {
+        "name": "Energy Streak: Diamond",
+        "description": "Maintain Stable Energy for 30 consecutive days.",
+        "icon": "flash",
+        "xp_reward": 1500,
+        "category": "metabolic",
+        "criteria": {"type": "metabolic_streak", "target": 30},
+    },
+    # ── Guardrail Mastery ──
+    {
+        "name": "Protein Champion",
+        "description": "Hit your protein target 7 days in a row.",
+        "icon": "barbell",
+        "xp_reward": 300,
+        "category": "metabolic",
+        "criteria": {"type": "guardrail_streak", "guardrail": "protein", "target": 7},
+    },
+    {
+        "name": "Fiber Faithful",
+        "description": "Meet your fiber floor 7 days in a row.",
+        "icon": "leaf",
+        "xp_reward": 300,
+        "category": "metabolic",
+        "criteria": {"type": "guardrail_streak", "guardrail": "fiber", "target": 7},
+    },
+    {
+        "name": "Sugar Slayer",
+        "description": "Stay under your sugar ceiling 7 days in a row.",
+        "icon": "shield-checkmark",
+        "xp_reward": 300,
+        "category": "metabolic",
+        "criteria": {"type": "guardrail_streak", "guardrail": "sugar", "target": 7},
+    },
+    {
+        "name": "Budget Lockdown",
+        "description": "Hit ALL three guardrails in a single day.",
+        "icon": "lock-closed",
+        "xp_reward": 250,
+        "category": "metabolic",
+        "criteria": {"type": "all_guardrails_day", "target": 1},
+    },
+    {
+        "name": "Perfect Energy Week",
+        "description": "Hit all three guardrails every day for a full week.",
+        "icon": "trophy",
+        "xp_reward": 1000,
+        "category": "metabolic",
+        "criteria": {"type": "all_guardrails_week", "target": 7},
+    },
+    # ── Fun / Flavor ──
+    {
+        "name": "Crash Avoided",
+        "description": "Improve your MES from Crash Risk to Stable in a single day.",
+        "icon": "trending-up",
+        "xp_reward": 150,
+        "category": "metabolic",
+        "criteria": {"type": "crash_to_stable_recovery"},
+    },
+    {
+        "name": "Macro Architect",
+        "description": "Score 90+ on protein, fiber, AND sugar in a single meal.",
+        "icon": "construct",
+        "xp_reward": 200,
+        "category": "metabolic",
+        "criteria": {"type": "triple_90_meal"},
+    },
 ]
 
 
@@ -452,6 +563,128 @@ def _check_whole_food_week(db: Session, user_id: str, meal_count: int) -> bool:
     return recipe_logs >= meal_count
 
 
+# ─── Metabolic helper functions ───
+
+def _count_metabolic_days(db: Session, user_id: str, min_score: float) -> int:
+    """Count total days with daily MES >= min_score."""
+    return db.query(MetabolicScore).filter(
+        MetabolicScore.user_id == user_id,
+        MetabolicScore.scope == "daily",
+        MetabolicScore.total_score >= min_score,
+    ).count()
+
+
+def _check_guardrail_streak(db: Session, user_id: str, guardrail: str, target: int) -> bool:
+    """Check if user hit a specific guardrail for `target` consecutive days."""
+    # Get daily scores ordered by date descending
+    daily_scores = (
+        db.query(MetabolicScore)
+        .filter(
+            MetabolicScore.user_id == user_id,
+            MetabolicScore.scope == "daily",
+        )
+        .order_by(MetabolicScore.date.desc())
+        .all()
+    )
+    if not daily_scores:
+        return False
+
+    # Load user's budget for thresholds
+    budget = db.query(MetabolicBudget).filter(MetabolicBudget.user_id == user_id).first()
+    if not budget:
+        return False
+
+    consecutive = 0
+    for score in daily_scores:
+        hit = False
+        if guardrail == "protein":
+            hit = (score.protein_g or 0) >= budget.protein_target_g
+        elif guardrail == "fiber":
+            hit = (score.fiber_g or 0) >= budget.fiber_floor_g
+        elif guardrail == "sugar":
+            hit = (score.sugar_g or 0) <= budget.sugar_ceiling_g
+        if hit:
+            consecutive += 1
+            if consecutive >= target:
+                return True
+        else:
+            consecutive = 0
+    return False
+
+
+def _check_all_guardrails_day(db: Session, user_id: str) -> bool:
+    """Check if user hit ALL three guardrails in any single day."""
+    budget = db.query(MetabolicBudget).filter(MetabolicBudget.user_id == user_id).first()
+    if not budget:
+        return False
+
+    daily_scores = (
+        db.query(MetabolicScore)
+        .filter(MetabolicScore.user_id == user_id, MetabolicScore.scope == "daily")
+        .all()
+    )
+    for score in daily_scores:
+        protein_ok = (score.protein_g or 0) >= budget.protein_target_g
+        fiber_ok = (score.fiber_g or 0) >= budget.fiber_floor_g
+        sugar_ok = (score.sugar_g or 0) <= budget.sugar_ceiling_g
+        if protein_ok and fiber_ok and sugar_ok:
+            return True
+    return False
+
+
+def _check_all_guardrails_week(db: Session, user_id: str, target: int) -> bool:
+    """Check if user hit all 3 guardrails every day for `target` consecutive days."""
+    budget = db.query(MetabolicBudget).filter(MetabolicBudget.user_id == user_id).first()
+    if not budget:
+        return False
+
+    daily_scores = (
+        db.query(MetabolicScore)
+        .filter(MetabolicScore.user_id == user_id, MetabolicScore.scope == "daily")
+        .order_by(MetabolicScore.date.desc())
+        .all()
+    )
+    consecutive = 0
+    for score in daily_scores:
+        protein_ok = (score.protein_g or 0) >= budget.protein_target_g
+        fiber_ok = (score.fiber_g or 0) >= budget.fiber_floor_g
+        sugar_ok = (score.sugar_g or 0) <= budget.sugar_ceiling_g
+        if protein_ok and fiber_ok and sugar_ok:
+            consecutive += 1
+            if consecutive >= target:
+                return True
+        else:
+            consecutive = 0
+    return False
+
+
+def _check_crash_recovery(db: Session, user_id: str) -> bool:
+    """Check if user improved from crash_risk to stable+ in consecutive days."""
+    daily_scores = (
+        db.query(MetabolicScore)
+        .filter(MetabolicScore.user_id == user_id, MetabolicScore.scope == "daily")
+        .order_by(MetabolicScore.date.asc())
+        .all()
+    )
+    for i in range(1, len(daily_scores)):
+        prev = daily_scores[i - 1]
+        curr = daily_scores[i]
+        if prev.tier == "crash_risk" and curr.tier in ("stable", "optimal"):
+            return True
+    return False
+
+
+def _check_triple_90_meal(db: Session, user_id: str) -> bool:
+    """Check if any single meal scored 90+ on all three sub-scores."""
+    return db.query(MetabolicScore).filter(
+        MetabolicScore.user_id == user_id,
+        MetabolicScore.scope == "meal",
+        MetabolicScore.protein_score >= 90,
+        MetabolicScore.fiber_score >= 90,
+        MetabolicScore.sugar_score >= 90,
+    ).first() is not None
+
+
 def check_achievements(db: Session, user: User, context: dict | None = None) -> list[dict]:
     """
     Check all achievements against current user state.
@@ -552,6 +785,26 @@ def check_achievements(db: Session, user: User, context: dict | None = None) -> 
         elif ctype == "whole_food_week":
             meal_req = criteria.get("meal_count", 21)
             met = _check_whole_food_week(db, user.id, meal_req)
+
+        # ── Metabolic (MES) types ──
+        elif ctype == "metabolic_streak":
+            ms = db.query(MetabolicStreak).filter(MetabolicStreak.user_id == user.id).first()
+            met = (ms.current_streak if ms else 0) >= target
+        elif ctype == "metabolic_days_stable":
+            met = _count_metabolic_days(db, user.id, 60) >= target
+        elif ctype == "metabolic_days_optimal":
+            met = _count_metabolic_days(db, user.id, 80) >= target
+        elif ctype == "guardrail_streak":
+            guardrail = criteria.get("guardrail", "")
+            met = _check_guardrail_streak(db, user.id, guardrail, target)
+        elif ctype == "all_guardrails_day":
+            met = _check_all_guardrails_day(db, user.id)
+        elif ctype == "all_guardrails_week":
+            met = _check_all_guardrails_week(db, user.id, target)
+        elif ctype == "crash_to_stable_recovery":
+            met = _check_crash_recovery(db, user.id)
+        elif ctype == "triple_90_meal":
+            met = _check_triple_90_meal(db, user.id)
 
         if met:
             ua = UserAchievement(

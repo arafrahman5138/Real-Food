@@ -205,6 +205,50 @@ SEED_MEALS = [
         ],
         "nutrition_estimate": {"calories": 180, "protein": 14, "carbs": 4, "fat": 12, "fiber": 1},
     },
+    {
+        "title": "Spinach Feta Egg White Scramble",
+        "description": "Egg whites scrambled with baby spinach, feta, and herbs for a lean, savory breakfast.",
+        "meal_type": "breakfast", "category": "quick", "difficulty": "easy",
+        "prep_time_min": 5, "cook_time_min": 7, "servings": 1,
+        "flavor_profile": ["savory", "mild"], "dietary_tags": ["gluten-free", "vegetarian"],
+        "ingredients": [
+            {"name": "egg whites", "quantity": "1", "unit": "cup", "category": "protein"},
+            {"name": "whole egg", "quantity": "1", "unit": "large", "category": "protein"},
+            {"name": "baby spinach", "quantity": "2", "unit": "cups", "category": "produce"},
+            {"name": "feta cheese", "quantity": "1.5", "unit": "tbsp", "category": "dairy"},
+            {"name": "extra virgin olive oil", "quantity": "1", "unit": "tsp", "category": "fats"},
+            {"name": "fresh dill", "quantity": "1", "unit": "tbsp", "category": "produce"},
+            {"name": "sea salt", "quantity": "1", "unit": "pinch", "category": "spices"},
+        ],
+        "steps": [
+            "Heat olive oil in a nonstick skillet over medium-low heat.",
+            "Wilt spinach for 1 minute, then add egg whites and the whole egg.",
+            "Scramble gently until just set, then fold in feta, dill, and a pinch of salt.",
+        ],
+        "nutrition_estimate": {"calories": 255, "protein": 28, "carbs": 5, "fat": 13, "fiber": 2},
+    },
+    {
+        "title": "Turkey Egg White Breakfast Tacos",
+        "description": "Lean turkey and fluffy eggs wrapped in low-carb egg wraps with salsa and avocado.",
+        "meal_type": "breakfast", "category": "quick", "difficulty": "easy",
+        "prep_time_min": 6, "cook_time_min": 8, "servings": 1,
+        "flavor_profile": ["savory", "umami"], "dietary_tags": ["gluten-free"],
+        "ingredients": [
+            {"name": "egg whites", "quantity": "0.75", "unit": "cup", "category": "protein"},
+            {"name": "whole egg", "quantity": "1", "unit": "large", "category": "protein"},
+            {"name": "turkey breast", "quantity": "2.5", "unit": "oz", "category": "protein"},
+            {"name": "egg wraps", "quantity": "2", "unit": "wraps", "category": "protein"},
+            {"name": "avocado", "quantity": "0.25", "unit": "whole", "category": "produce"},
+            {"name": "fresh salsa", "quantity": "2", "unit": "tbsp", "category": "produce"},
+            {"name": "extra virgin olive oil", "quantity": "1", "unit": "tsp", "category": "fats"},
+        ],
+        "steps": [
+            "Warm the turkey in a skillet with olive oil for 1-2 minutes.",
+            "Add egg whites and egg, then scramble until softly set.",
+            "Fill egg wraps with the scramble, avocado, and salsa, then fold and serve.",
+        ],
+        "nutrition_estimate": {"calories": 318, "protein": 31, "carbs": 8, "fat": 16, "fiber": 3},
+    },
     # ── LUNCH — QUICK (20 meals) ─────────────────────────────────────────
     {
         "title": "Mediterranean Quinoa Bowl",
@@ -2871,5 +2915,3 @@ SEED_MEALS = [
         "nutrition_estimate": {"calories": 220, "protein": 4, "carbs": 28, "fat": 12, "fiber": 5},
     },
 ]
-
-

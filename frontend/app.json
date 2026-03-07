@@ -18,9 +18,12 @@
       "bundleIdentifier": "com.wholefoodlabs.app",
       "usesAppleSignIn": true,
       "infoPlist": {
+        "NSCameraUsageDescription": "WholeFoodLabs uses the camera to scan barcodes and capture product labels.",
+        "NSPhotoLibraryUsageDescription": "WholeFoodLabs uses your photo library so you can attach ingredient and nutrition label photos.",
+        "NSPhotoLibraryAddUsageDescription": "WholeFoodLabs may save temporary label images you choose during scanning.",
         "CFBundleURLTypes": [
           {
-            "CFBundleURLSchemes": ["wholefoodlabs"]
+            "CFBundleURLSchemes": ["wholefoodlabs", "com.wholefoodlabs.app"]
           }
         ]
       }
@@ -30,7 +33,12 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#0A0A0F"
       },
-      "package": "com.wholefoodlabs.app"
+      "package": "com.wholefoodlabs.app",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_EXTERNAL_STORAGE"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -40,7 +48,20 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-apple-authentication"
+      "expo-apple-authentication",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "WholeFoodLabs uses the camera to scan barcodes and capture product labels."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "WholeFoodLabs uses your photo library so you can attach ingredient and nutrition label photos.",
+          "cameraPermission": "WholeFoodLabs uses the camera so you can capture ingredient and nutrition label photos."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

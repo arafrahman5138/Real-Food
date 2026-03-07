@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+import asyncio
 import json
 import logging
 import time
@@ -72,7 +73,23 @@ async def healthify_food(
     messages.append({"role": "user", "content": request.message})
 
     try:
-        result = await healthify_agent(request.message, messages[:-1])
+        result = await asyncio.wait_for(
+            healthify_agent(request.message, messages[:-1]),
+            timeout=20,
+        )
+    except asyncio.TimeoutError:
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        logger.warning(
+            "healthify.request.timeout request_id=%s user_id=%s session_id=%s elapsed_ms=%s",
+            request_id,
+            current_user.id,
+            session.id,
+            elapsed_ms,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Healthify AI timed out. Please try again with a shorter prompt.",
+        )
     except ResourceExhausted:
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         logger.warning(
@@ -180,10 +197,23 @@ async def healthify_food_stream(
         full_response = ""
         chunk_count = 0
         try:
-            async for chunk in healthify_agent(request.message, messages[:-1], stream=True):
-                full_response += chunk
-                chunk_count += 1
-                yield f"data: {json.dumps({'content': chunk})}\n\n"
+            async with asyncio.timeout(20):
+                async for chunk in healthify_agent(request.message, messages[:-1], stream=True):
+                    full_response += chunk
+                    chunk_count += 1
+                    yield f"data: {json.dumps({'content': chunk})}\n\n"
+        except TimeoutError:
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+            logger.warning(
+                "healthify.stream.timeout request_id=%s user_id=%s session_id=%s elapsed_ms=%s chunks=%s",
+                request_id,
+                current_user.id,
+                session.id,
+                elapsed_ms,
+                chunk_count,
+            )
+            yield f"data: {json.dumps({'error': 'Healthify AI timed out. Please try again with a shorter prompt.', 'done': True})}\n\n"
+            return
         except ResourceExhausted:
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
             logger.warning(

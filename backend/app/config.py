@@ -4,11 +4,18 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     app_name: str = "WholeFoodLabs API"
+    environment: str = "development"  # development | staging | production
     database_url: str = "sqlite:///./wholefoodlabs.db"
     secret_key: str = "dev-secret-key-change-in-production"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 365
+
+    # Security / network hardening
+    cors_allowed_origins: str = "http://localhost:8081,http://localhost:3000"
+    rate_limit_per_minute: int = 120
+    auth_rate_limit_per_minute: int = 20
+
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     google_api_key: str = ""

@@ -18,6 +18,13 @@ from app.schemas.nutrition import (
     DailyNutritionResponse,
 )
 from app.achievements_engine import award_xp, update_nutrition_streak, check_achievements
+from app.services.metabolic_engine import (
+    on_food_log_created,
+    get_or_create_budget,
+    recompute_daily_score,
+    update_metabolic_streak,
+)
+from app.models.metabolic import MetabolicScore
 
 router = APIRouter()
 
@@ -138,6 +145,9 @@ def _serialize_log(log: FoodLog) -> FoodLogResponse:
         meal_type=log.meal_type,
         source_type=log.source_type,
         source_id=log.source_id,
+        group_id=log.group_id,
+        group_mes_score=log.group_mes_score,
+        group_mes_tier=log.group_mes_tier,
         title=log.title,
         servings=float(log.servings or 1),
         quantity=float(log.quantity or 1),
@@ -291,6 +301,9 @@ async def create_log(
         meal_type=payload.meal_type,
         source_type=payload.source_type,
         source_id=payload.source_id,
+        group_id=payload.group_id,
+        group_mes_score=payload.group_mes_score,
+        group_mes_tier=payload.group_mes_tier,
         title=payload.title or title,
         servings=payload.servings,
         quantity=payload.quantity,
@@ -309,6 +322,12 @@ async def create_log(
     update_nutrition_streak(db, current_user, daily_score, day)
     # Check achievements (food_log_count, nutrition_streak, tier achievements, etc.)
     check_achievements(db, current_user)
+
+    # ── Metabolic Energy Score hook ──
+    try:
+        on_food_log_created(db, current_user.id, log)
+    except Exception:
+        pass  # MES is best-effort; don't break food logging
 
     return _serialize_log(log)
 
@@ -348,6 +367,10 @@ async def update_log(
         log.servings = payload.servings
     if payload.quantity is not None:
         log.quantity = payload.quantity
+    if payload.group_mes_score is not None:
+        log.group_mes_score = payload.group_mes_score
+    if payload.group_mes_tier is not None:
+        log.group_mes_tier = payload.group_mes_tier
 
     if payload.nutrition is not None:
         factor = max(0.1, float(log.servings or 1.0)) * max(0.1, float(log.quantity or 1.0))
@@ -361,6 +384,44 @@ async def update_log(
     return _serialize_log(log)
 
 
+@router.delete("/logs/group/{group_id}")
+async def delete_group_logs(
+    group_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete all food logs that share the given group_id."""
+    group_logs = (
+        db.query(FoodLog)
+        .filter(FoodLog.user_id == current_user.id, FoodLog.group_id == group_id)
+        .all()
+    )
+    if not group_logs:
+        raise HTTPException(status_code=404, detail="No logs found for this group")
+
+    day = group_logs[0].date
+
+    for log in group_logs:
+        db.query(MetabolicScore).filter(
+            MetabolicScore.user_id == current_user.id,
+            MetabolicScore.food_log_id == log.id,
+        ).delete(synchronize_session=False)
+        db.delete(log)
+
+    db.commit()
+
+    _compute_daily(db, current_user.id, day)
+
+    try:
+        budget = get_or_create_budget(db, current_user.id)
+        daily = recompute_daily_score(db, current_user.id, day, budget)
+        update_metabolic_streak(db, current_user.id, daily.total_score, day)
+    except Exception:
+        pass
+
+    return {"ok": True, "deleted_count": len(group_logs)}
+
+
 @router.delete("/logs/{log_id}")
 async def delete_log(
     log_id: str,
@@ -372,10 +433,26 @@ async def delete_log(
         raise HTTPException(status_code=404, detail="Log not found")
 
     day = log.date
+
+    # Remove dependent per-meal MES rows first (metabolic_scores.food_log_id -> food_logs.id)
+    # to avoid FK constraint failures when deleting a food log.
+    db.query(MetabolicScore).filter(
+        MetabolicScore.user_id == current_user.id,
+        MetabolicScore.food_log_id == log.id,
+    ).delete(synchronize_session=False)
+
     db.delete(log)
     db.commit()
 
     _compute_daily(db, current_user.id, day)
+
+    # Keep metabolic daily score + streak in sync after deletion.
+    try:
+        budget = get_or_create_budget(db, current_user.id)
+        daily = recompute_daily_score(db, current_user.id, day, budget)
+        update_metabolic_streak(db, current_user.id, daily.total_score, day)
+    except Exception:
+        pass
 
     return {"ok": True}
 

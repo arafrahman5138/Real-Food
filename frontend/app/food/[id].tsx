@@ -11,9 +11,11 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Card } from '../../components/GradientCard';
+import { ChronometerSuccessModal } from '../../components/ChronometerSuccessModal';
 import { useTheme } from '../../hooks/useTheme';
 import { foodApi, nutritionApi } from '../../services/api';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
+
 
 interface NutrientDetail {
   value: number;
@@ -43,12 +45,12 @@ const MACRO_KEYS: { match: string; label: string; color: 'text' | 'primary' | 'a
 function findNutrient(nutrients: Record<string, NutrientDetail | number>, match: string): { value: number; unit: string } | null {
   for (const [key, val] of Object.entries(nutrients)) {
     if (key.toLowerCase().includes(match)) {
-      if (typeof val === 'number') return { value: val, unit: match === 'energy' ? 'kcal' : 'g' };
+      if (typeof val === 'number') return { value: val, unit: match === 'energy' ? 'calories' : 'g' };
       if (val && typeof val === 'object' && 'value' in val) return { value: val.value, unit: val.unit };
     }
   }
   const simple = nutrients[match] ?? nutrients[match + 's'];
-  if (typeof simple === 'number') return { value: simple, unit: match === 'energy' || match === 'calories' ? 'kcal' : 'g' };
+  if (typeof simple === 'number') return { value: simple, unit: match === 'energy' || match === 'calories' ? 'calories' : 'g' };
   return null;
 }
 
@@ -60,6 +62,10 @@ export default function FoodDetailScreen() {
   const [error, setError] = useState<string | null>(null);
   const [logging, setLogging] = useState(false);
   const [logSuccess, setLogSuccess] = useState(false);
+  const [successModal, setSuccessModal] = useState<{ visible: boolean; message: string }>({
+    visible: false,
+    message: '',
+  });
 
   useEffect(() => {
     if (!id) return;
@@ -103,10 +109,10 @@ export default function FoodDetailScreen() {
       });
       setLogSuccess(true);
       setTimeout(() => setLogSuccess(false), 3000);
-      Alert.alert('Logged!', `"${food.name}" added to today's nutrition log.`, [
-        { text: 'OK' },
-        { text: 'View Chronometer', onPress: () => router.push('/(tabs)/chronometer' as any) },
-      ]);
+      setSuccessModal({
+        visible: true,
+        message: `"${food.name}" has been added to today's nutrition log.`,
+      });
     } catch (e) {
       Alert.alert('Error', 'Failed to log food. Please try again.');
     } finally {
@@ -118,7 +124,7 @@ export default function FoodDetailScreen() {
     ? MACRO_KEYS.map((mk) => {
         const found = findNutrient(food.nutrients, mk.match)
           ?? (mk.match === 'energy' ? findNutrient(food.nutrients, 'calories') : null);
-        return { ...mk, value: found?.value ?? 0, unit: found?.unit ?? (mk.match === 'energy' ? 'kcal' : 'g') };
+        return { ...mk, value: found?.value ?? 0, unit: found?.unit ?? (mk.match === 'energy' ? 'calories' : 'g') };
       })
     : [];
 
@@ -166,6 +172,15 @@ export default function FoodDetailScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <ChronometerSuccessModal
+        visible={successModal.visible}
+        message={successModal.message}
+        onPrimary={() => {
+          setSuccessModal({ visible: false, message: '' });
+          router.push('/(tabs)/chronometer' as any);
+        }}
+        onSecondary={() => setSuccessModal({ visible: false, message: '' })}
+      />
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
@@ -258,6 +273,7 @@ export default function FoodDetailScreen() {
 
       {/* Sticky Log Bar */}
       <View style={[styles.logBar, { backgroundColor: theme.surface, borderTopColor: theme.border }]}>
+        <View style={{ height: 10 }} />
         <TouchableOpacity
           style={[styles.logBtn, { backgroundColor: logSuccess ? theme.success : theme.primary }]}
           onPress={handleLog}

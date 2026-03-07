@@ -40,7 +40,10 @@ const CATEGORY_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
 export function GroceryView() {
   const theme = useTheme();
   const currentPlan = useMealPlanStore((s) => s.currentPlan);
-  const completeAction = useGamificationStore((s) => s.completeAction);
+  const quests = useGamificationStore((s) => s.quests);
+  const questsLoaded = useGamificationStore((s) => s.questsLoaded);
+  const fetchQuests = useGamificationStore((s) => s.fetchQuests);
+  const updateQuestProgress = useGamificationStore((s) => s.updateQuestProgress);
   const addXp = useAuthStore((s) => s.addXp);
   const [items, setItems] = useState<GroceryItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -87,6 +90,12 @@ export function GroceryView() {
     loadGrocery();
   }, [currentPlan?.id]);
 
+  useEffect(() => {
+    if (!questsLoaded) {
+      fetchQuests();
+    }
+  }, [questsLoaded, fetchQuests]);
+
   const [questToast, setQuestToast] = useState<string | null>(null);
   const toastAnim = useRef(new Animated.Value(0)).current;
 
@@ -100,7 +109,7 @@ export function GroceryView() {
     ]).start(() => setQuestToast(null));
   };
 
-  const toggleItem = (index: number) => {
+  const toggleItem = async (index: number) => {
     const wasChecked = items[index]?.checked;
     const updated = items.map((item, i) =>
       i === index ? { ...item, checked: !item.checked } : item
@@ -112,10 +121,13 @@ export function GroceryView() {
     AsyncStorage.setItem(GROCERY_CHECKED_KEY, JSON.stringify(checkedNames)).catch(() => {});
 
     if (!wasChecked) {
-      const questResult = completeAction('grocery', 1);
-      if (questResult.gainedXp > 0) {
-        addXp(questResult.gainedXp);
-        showQuestToast(`Quest complete · +${questResult.gainedXp} XP`);
+      const groceryQuest = quests.find((quest) => !quest.completed && /grocery/i.test(quest.title));
+      if (groceryQuest) {
+        const questResult = await updateQuestProgress(groceryQuest.id, 1);
+        if (questResult.xp_gained > 0) {
+          addXp(questResult.xp_gained);
+          showQuestToast(`Quest complete · +${questResult.xp_gained} XP`);
+        }
       }
     }
   };
@@ -221,7 +233,7 @@ export function GroceryView() {
       <SectionList
         sections={sections}
         keyExtractor={(item) => `${item.category}-${item.name}-${item.originalIndex}`}
-        contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: Spacing.huge }}
+        contentContainerStyle={{ paddingHorizontal: Spacing.xl, paddingBottom: 120 }}
         stickySectionHeadersEnabled={false}
         refreshControl={
           <RefreshControl

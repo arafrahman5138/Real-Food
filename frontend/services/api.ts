@@ -281,8 +281,11 @@ export const chatApi = {
 
 export const mealPlanApi = {
   generate: (data?: any) => api.post<any>('/meal-plans/generate', data || {}),
+  shortlist: (data?: any) => api.post<any>('/meal-plans/shortlist', data || {}),
   getCurrent: () => api.get<any>('/meal-plans/current'),
   getHistory: () => api.get<any[]>('/meal-plans/history'),
+  getAlternatives: (itemId: string) => api.get<any>(`/meal-plans/items/${itemId}/alternatives`),
+  replaceMeal: (itemId: string, recipe_id: string) => api.post<any>(`/meal-plans/items/${itemId}/replace`, { recipe_id }),
 };
 
 export const groceryApi = {
@@ -295,6 +298,24 @@ export const foodApi = {
   search: (q: string, page?: number) =>
     api.get<any>(`/foods/search?q=${encodeURIComponent(q)}&page=${page || 1}`),
   getDetail: (id: string) => api.get<any>(`/foods/${id}`),
+};
+
+export const wholeFoodScanApi = {
+  analyzeBarcode: (barcode: string) =>
+    api.get<any>(`/whole-food-scan/barcode/${encodeURIComponent(barcode)}`),
+  analyzeLabel: (data: {
+    product_name?: string;
+    brand?: string;
+    barcode?: string;
+    ingredients_text: string;
+    calories?: number;
+    protein_g?: number;
+    fiber_g?: number;
+    sugar_g?: number;
+    carbs_g?: number;
+    sodium_mg?: number;
+    source?: string;
+  }) => api.post<any>('/whole-food-scan/analyze', data),
 };
 
 export const recipeApi = {
@@ -340,6 +361,13 @@ export const recipeApi = {
       step_number: stepNumber,
       question: question || '',
     }),
+  // Pairing suggestions — sides/components to improve MES
+  getPairingSuggestions: (recipeId: string, limit?: number, sideType?: string) => {
+    const params: string[] = [`recipe_id=${encodeURIComponent(recipeId)}`];
+    if (limit) params.push(`limit=${limit}`);
+    if (sideType) params.push(`side_type=${encodeURIComponent(sideType)}`);
+    return api.get<any[]>(`/metabolic/pairings/suggestions?${params.join('&')}`);
+  },
 };
 
 export const nutritionApi = {
@@ -354,6 +382,7 @@ export const nutritionApi = {
   createLog: (data: any) => api.post<any>('/nutrition/logs', data),
   updateLog: (id: string, data: any) => api.patch<any>(`/nutrition/logs/${id}`, data),
   deleteLog: (id: string) => api.delete<any>(`/nutrition/logs/${id}`),
+  deleteGroupLogs: (groupId: string) => api.delete<any>(`/nutrition/logs/group/${groupId}`),
 };
 
 export const gameApi = {
@@ -372,4 +401,54 @@ export const gameApi = {
   getDailyQuests: () => api.get<any[]>('/game/daily-quests'),
   updateQuestProgress: (questId: string, amount?: number) =>
     api.post<any>(`/game/daily-quests/${questId}/progress${amount ? `?amount=${amount}` : ''}`),
+};
+
+// ── Metabolic Budget API ──
+export const metabolicApi = {
+  // Budget
+  getBudget: () => api.get<any>('/metabolic/budget'),
+  updateBudget: (data: any) => api.put<any>('/metabolic/budget', data),
+
+  // Profile / Onboarding
+  getProfile: () => api.get<any>('/metabolic/profile'),
+  saveProfile: (data: any) => api.post<any>('/metabolic/profile', data),
+  patchProfile: (data: any) => api.patch<any>('/metabolic/profile', data),
+  recalculateProfile: () => api.post<any>('/metabolic/profile/recalculate'),
+
+  // Scores
+  getDailyScore: (date?: string) =>
+    api.get<any>(`/metabolic/score/daily${date ? `?date=${encodeURIComponent(date)}` : ''}`),
+  getMealScores: (date?: string) =>
+    api.get<any[]>(`/metabolic/score/meals${date ? `?date=${encodeURIComponent(date)}` : ''}`),
+  getScoreHistory: (days?: number) =>
+    api.get<any[]>(`/metabolic/score/history${days ? `?days=${days}` : ''}`),
+  previewMeal: (data: { protein_g: number; fiber_g: number; sugar_g?: number; carbs_g?: number; calories?: number }, date?: string) =>
+    api.post<any>(`/metabolic/score/preview${date ? `?date=${encodeURIComponent(date)}` : ''}`, data),
+
+  // Meal suggestions — recipes that fit remaining budget
+  getMealSuggestions: (date?: string, limit?: number) => {
+    const params: string[] = [];
+    if (date) params.push(`date=${encodeURIComponent(date)}`);
+    if (limit) params.push(`limit=${limit}`);
+    const qs = params.length ? `?${params.join('&')}` : '';
+    return api.get<any[]>(`/metabolic/meal-suggestions${qs}`);
+  },
+
+  // Streak
+  getStreak: () => api.get<any>('/metabolic/streak'),
+
+  // Remaining budget
+  getRemainingBudget: (date?: string) =>
+    api.get<any>(`/metabolic/remaining-budget${date ? `?date=${encodeURIComponent(date)}` : ''}`),
+
+  // Composite MES — score multiple food logs as one meal
+  getCompositeMES: (foodLogIds: string[]) =>
+    api.post<any>('/metabolic/score/composite', { food_log_ids: foodLogIds }),
+
+  // Composite MES preview — score multiple recipes before logging
+  previewCompositeMES: (recipeIds: string[], servings?: number[]) =>
+    api.post<any>('/metabolic/score/preview-composite', {
+      recipe_ids: recipeIds,
+      servings: servings || recipeIds.map(() => 1),
+    }),
 };

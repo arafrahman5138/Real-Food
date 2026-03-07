@@ -49,6 +49,35 @@ def init_db():
     """Create all tables. Call this on startup for SQLite dev environments."""
     Base.metadata.create_all(bind=engine)
     _migrate_add_columns()
+    _migrate_pg_columns()
+
+
+def _migrate_pg_columns():
+    """Add missing columns in PostgreSQL (lightweight startup migration)."""
+    if settings.database_url.startswith("sqlite"):
+        return
+    from sqlalchemy import text
+    migrations = [
+        # metabolic_scores
+        ("metabolic_scores", "display_score", "ALTER TABLE metabolic_scores ADD COLUMN display_score FLOAT DEFAULT 0"),
+        ("metabolic_scores", "display_tier", "ALTER TABLE metabolic_scores ADD COLUMN display_tier VARCHAR DEFAULT 'crash_risk'"),
+        ("metabolic_scores", "meal_context", "ALTER TABLE metabolic_scores ADD COLUMN meal_context VARCHAR DEFAULT 'full_meal'"),
+    ]
+    with engine.begin() as conn:
+        for table, col, ddl in migrations:
+            try:
+                conn.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    f"WHERE table_name='{table}' AND column_name='{col}'"
+                ))
+                rows = conn.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    f"WHERE table_name='{table}' AND column_name='{col}'"
+                )).fetchall()
+                if not rows:
+                    conn.execute(text(ddl))
+            except Exception:
+                pass
 
 
 def _migrate_add_columns():
@@ -96,6 +125,21 @@ def _migrate_add_columns():
             conn.execute('ALTER TABLE users ADD COLUMN disliked_ingredients TEXT DEFAULT "[]"')
         if "protein_preferences" not in user_cols:
             conn.execute('ALTER TABLE users ADD COLUMN protein_preferences TEXT DEFAULT "{}"')
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+    # ── Metabolic scores – display_score, display_tier, meal_context columns ──
+    try:
+        conn = sqlite3.connect(db_path)
+        ms_cols = [row[1] for row in conn.execute("PRAGMA table_info(metabolic_scores)").fetchall()]
+        if "display_score" not in ms_cols:
+            conn.execute("ALTER TABLE metabolic_scores ADD COLUMN display_score FLOAT DEFAULT 0")
+        if "display_tier" not in ms_cols:
+            conn.execute("ALTER TABLE metabolic_scores ADD COLUMN display_tier TEXT DEFAULT 'crash_risk'")
+        if "meal_context" not in ms_cols:
+            conn.execute("ALTER TABLE metabolic_scores ADD COLUMN meal_context TEXT DEFAULT 'full_meal'")
         conn.commit()
         conn.close()
     except Exception:

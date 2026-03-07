@@ -1,5 +1,6 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.auth import get_current_user
@@ -9,13 +10,69 @@ from app.models.saved_recipe import SavedRecipe
 from app.nutrition_tags import HEALTH_BENEFIT_LABELS
 from app.achievements_engine import check_achievements
 from app.services.ingredient_substitution import apply_user_substitutions
+from app.services.metabolic_engine import compute_meal_mes, display_tier, get_or_create_budget
 from typing import Optional
 
 router = APIRouter()
 
 
-def _serialize_recipe_card(r: Recipe) -> dict:
+def _compute_card_pairing_score(r: Recipe, db: Session, current_user: User) -> dict:
+    if getattr(r, 'needs_default_pairing', None) is not True:
+        return {}
+
+    default_ids = getattr(r, 'default_pairing_ids', None) or []
+    if not default_ids:
+        return {}
+
+    default_recipes = db.query(Recipe).filter(Recipe.id.in_(default_ids)).all()
+    if not default_recipes:
+        return {}
+
+    role_priority = ["veg_side", "carb_base", "sauce", "dessert", "protein_base", "full_meal"]
+    preferred_default = sorted(
+        default_recipes,
+        key=lambda recipe: (
+            role_priority.index(getattr(recipe, 'recipe_role', None) or "full_meal")
+            if (getattr(recipe, 'recipe_role', None) or "full_meal") in role_priority
+            else len(role_priority)
+        ),
+    )[0]
+
+    budget = get_or_create_budget(db, current_user.id)
+    source_nutrition = r.nutrition_info or {}
+    pairing_nutrition = preferred_default.nutrition_info or {}
+    source_mes = compute_meal_mes(source_nutrition, budget)
+
+    combined = {}
+    for key in ("protein", "protein_g", "fiber", "fiber_g", "carbs", "carbs_g",
+                "sugar", "sugar_g", "calories", "fat", "fat_g"):
+        combined[key] = float(source_nutrition.get(key, 0) or 0) + float(pairing_nutrition.get(key, 0) or 0)
+
+    combined_mes = compute_meal_mes(combined, budget)
+    mes_delta = round(combined_mes["total_score"] - source_mes["total_score"], 1)
+
+    raw_mes = source_nutrition.get("mes_score")
+    composite_display_score = None
+    if raw_mes is not None:
+        try:
+            composite_display_score = min(100, round(float(raw_mes) + mes_delta, 1))
+        except (TypeError, ValueError):
+            composite_display_score = None
+    if composite_display_score is None:
+        composite_display_score = round(combined_mes["display_score"], 1)
+
     return {
+        "card_pairing_recipe_id": str(preferred_default.id),
+        "card_pairing_recipe_role": getattr(preferred_default, 'recipe_role', None) or "full_meal",
+        "card_pairing_title": preferred_default.title,
+        "card_pairing_mes_delta": mes_delta,
+        "composite_display_score": composite_display_score,
+        "composite_display_tier": display_tier(composite_display_score),
+    }
+
+
+def _serialize_recipe_card(r: Recipe, db: Session | None = None, current_user: User | None = None) -> dict:
+    card = {
         "id": str(r.id),
         "title": r.title,
         "description": r.description or "",
@@ -32,17 +89,53 @@ def _serialize_recipe_card(r: Recipe) -> dict:
         "carb_type": r.carb_type or [],
         "nutrition_info": r.nutrition_info or {},
         "servings": r.servings,
+        # ── Composition fields ──
+        "recipe_role": getattr(r, 'recipe_role', None) or "full_meal",
+        "is_component": getattr(r, 'is_component', False) or False,
+        "meal_group_id": getattr(r, 'meal_group_id', None),
+        "default_pairing_ids": getattr(r, 'default_pairing_ids', None) or [],
+        "needs_default_pairing": getattr(r, 'needs_default_pairing', None),
+        "is_mes_scoreable": getattr(r, 'is_mes_scoreable', True) if getattr(r, 'is_mes_scoreable', None) is not None else True,
     }
+    if db is not None and current_user is not None:
+        card.update(_compute_card_pairing_score(r, db, current_user))
+    return card
 
 
-def _serialize_recipe_full(r: Recipe) -> dict:
+def _serialize_recipe_full(r: Recipe, db: Session | None = None) -> dict:
     card = _serialize_recipe_card(r)
     card.update({
         "ingredients": r.ingredients or [],
         "steps": r.steps or [],
         "is_ai_generated": r.is_ai_generated,
         "image_url": r.image_url,
+        "component_composition": getattr(r, 'component_composition', None),
     })
+
+    # Expand component details only for true composed meals or opted-in default pairings.
+    should_expand_components = (
+        getattr(r, 'needs_default_pairing', None) is True
+        or bool(getattr(r, 'component_composition', None))
+    )
+    pairing_ids = getattr(r, 'default_pairing_ids', None) or []
+    if db and pairing_ids and should_expand_components:
+        # Load all components in one query and preserve pairing order from JSON ids.
+        comps = db.query(Recipe).filter(Recipe.id.in_(pairing_ids)).all()
+        comp_by_id = {str(comp.id): comp for comp in comps}
+        components = []
+        for pid in pairing_ids:
+            comp = comp_by_id.get(str(pid))
+            if comp:
+                components.append({
+                    "id": str(comp.id),
+                    "title": comp.title,
+                    "recipe_role": comp.recipe_role or "full_meal",
+                    "steps": comp.steps or [],
+                    "ingredients": comp.ingredients or [],
+                })
+        if components:
+            card["components"] = components
+
     return card
 
 
@@ -64,6 +157,13 @@ CATEGORY_ALIASES: dict[str, set[str]] = {
 # Only real meal-type values (not category / meta tags)
 MEAL_TYPE_WHITELIST = {"breakfast", "lunch", "dinner", "snack", "condiment", "dessert"}
 
+# View-mode → recipe_role / is_component mapping
+VIEW_MODE_FILTERS: dict[str, dict] = {
+    "meal_prep": {"is_component": True},    # show decoupled components only
+    "sit_down": {"is_component": False, "recipe_role": "full_meal"},  # composed meals only
+    # "quick" is handled by category tag, not recipe_role
+}
+
 
 @router.get("/browse")
 async def browse_recipes(
@@ -71,6 +171,9 @@ async def browse_recipes(
     cuisine: Optional[str] = None,
     meal_type: Optional[str] = None,
     category: Optional[str] = None,
+    view_mode: Optional[str] = None,
+    recipe_role: Optional[str] = None,
+    meal_group_id: Optional[str] = None,
     flavor: Optional[str] = None,
     dietary: Optional[str] = None,
     cook_time: Optional[str] = None,
@@ -83,7 +186,29 @@ async def browse_recipes(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    all_recipes = db.query(Recipe).all()
+    query = db.query(Recipe)
+
+    # Resolve view_mode to role/component constraints
+    vm_filter = VIEW_MODE_FILTERS.get(view_mode, {}) if view_mode and view_mode != "all" else {}
+
+    # Push scalar filters to SQL first to avoid loading the full recipe table.
+    if q:
+        pattern = f"%{q}%"
+        query = query.filter(or_(Recipe.title.ilike(pattern), Recipe.description.ilike(pattern)))
+    if cuisine:
+        query = query.filter(Recipe.cuisine.ilike(cuisine))
+    if vm_filter.get("is_component") is not None:
+        query = query.filter(Recipe.is_component == vm_filter["is_component"])
+    if vm_filter.get("recipe_role"):
+        query = query.filter(Recipe.recipe_role == vm_filter["recipe_role"])
+    if recipe_role:
+        query = query.filter(Recipe.recipe_role == recipe_role)
+    if meal_group_id:
+        query = query.filter(Recipe.meal_group_id == meal_group_id)
+    if difficulty:
+        query = query.filter(Recipe.difficulty.ilike(difficulty))
+
+    all_recipes = query.all()
 
     # Parse comma-separated multi-select values
     protein_values = [v.strip().lower() for v in protein_type.split(",") if v.strip()] if protein_type else []
@@ -96,23 +221,18 @@ async def browse_recipes(
 
     filtered = []
     for r in all_recipes:
-        if q and q.lower() not in (r.title or "").lower() and q.lower() not in (r.description or "").lower():
-            continue
-        if cuisine and (r.cuisine or "").lower() != cuisine.lower():
-            continue
         if meal_type and not _json_contains(r.tags, meal_type):
             continue
         if category_matches:
             tags_lower = {str(t).lower() for t in (r.tags or [])}
             if not category_matches & tags_lower:
                 continue
+        # ── Composition filters ──
         if flavor and not _json_contains(r.flavor_profile, flavor):
             continue
         if dietary and not _json_contains(r.dietary_tags, dietary):
             continue
         if health_benefit and not _json_contains(r.health_benefits, health_benefit):
-            continue
-        if difficulty and (r.difficulty or "").lower() != difficulty.lower():
             continue
         if cook_time:
             total = r.total_time_min or 0
@@ -139,7 +259,7 @@ async def browse_recipes(
     page_items = filtered[start:end]
 
     return {
-        "items": [_serialize_recipe_card(r) for r in page_items],
+        "items": [_serialize_recipe_card(r, db, current_user) for r in page_items],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -217,7 +337,7 @@ async def get_recipe(
     recipe = db.query(Recipe).filter(Recipe.id == recipe_id).first()
     if not recipe:
         raise HTTPException(status_code=404, detail="Recipe not found")
-    return _serialize_recipe_full(recipe)
+    return _serialize_recipe_full(recipe, db=db)
 
 
 @router.get("/")
@@ -238,7 +358,7 @@ async def search_recipes(
         query = query.filter(Recipe.total_time_min <= max_time)
 
     recipes = query.limit(20).all()
-    return [_serialize_recipe_card(r) for r in recipes]
+    return [_serialize_recipe_card(r, db, current_user) for r in recipes]
 
 
 @router.get("/saved/list")
@@ -257,7 +377,7 @@ async def get_saved_recipes(
     recipe_map = {str(r.id): r for r in recipes}
     return {
         "items": [
-            _serialize_recipe_card(recipe_map[rid])
+            _serialize_recipe_card(recipe_map[rid], db, current_user)
             for rid in recipe_ids
             if rid in recipe_map
         ],
@@ -413,8 +533,8 @@ async def substitute_recipe_ingredients(
             liked_proteins=protein_preferences.get("liked", []),
             disliked_proteins=protein_preferences.get("disliked", []),
             custom_excludes=body.custom_excludes or [],
-            timeout_s=90,
-            allow_fallback=False,
+            timeout_s=12,
+            allow_fallback=True,
         )
         logger.info(
             "substitute.success recipe_id=%s swaps=%s used_ai=%s",
@@ -427,7 +547,7 @@ async def substitute_recipe_ingredients(
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
+            detail="Unable to generate substitutions right now. Please try again.",
         ) from exc
 
     return {

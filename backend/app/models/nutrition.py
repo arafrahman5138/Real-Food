@@ -35,6 +35,9 @@ class FoodLog(Base):
 
     source_type = Column(String, default="manual")  # manual|recipe|meal_plan|cook_mode
     source_id = Column(String, nullable=True)
+    group_id = Column(String, nullable=True, index=True)  # links main meal + side logs
+    group_mes_score = Column(Float, nullable=True)  # combined MES score for grouped meals
+    group_mes_tier = Column(String, nullable=True)   # combined MES tier for grouped meals
 
     quantity = Column(Float, default=1.0)
     servings = Column(Float, default=1.0)

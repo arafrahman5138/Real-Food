@@ -25,6 +25,9 @@ class FoodLogCreate(BaseModel):
     meal_type: str = "meal"
     source_type: str = "manual"
     source_id: Optional[str] = None
+    group_id: Optional[str] = None
+    group_mes_score: Optional[float] = None
+    group_mes_tier: Optional[str] = None
     title: Optional[str] = None
     servings: float = 1.0
     quantity: float = 1.0
@@ -37,6 +40,8 @@ class FoodLogUpdate(BaseModel):
     servings: Optional[float] = None
     quantity: Optional[float] = None
     nutrition: Optional[Dict[str, Any]] = None
+    group_mes_score: Optional[float] = None
+    group_mes_tier: Optional[str] = None
 
 
 class FoodLogResponse(BaseModel):
@@ -45,6 +50,9 @@ class FoodLogResponse(BaseModel):
     meal_type: str
     source_type: str
     source_id: Optional[str] = None
+    group_id: Optional[str] = None
+    group_mes_score: Optional[float] = None
+    group_mes_tier: Optional[str] = None
     title: Optional[str] = None
     servings: float
     quantity: float

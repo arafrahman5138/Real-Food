@@ -8,6 +8,7 @@ from app.db import Base, GUID
 from app.models import (  # noqa: F401
     user, meal_plan, recipe, grocery, gamification,
     saved_recipe, nutrition, local_food,
+    metabolic, metabolic_profile,
 )
 
 config = context.config

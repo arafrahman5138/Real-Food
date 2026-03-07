@@ -9,7 +9,7 @@ import {
   FlatList,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { ScreenContainer } from '../../components/ScreenContainer';
 import { Card } from '../../components/GradientCard';
 import { useTheme } from '../../hooks/useTheme';
@@ -27,33 +27,46 @@ type FoodItem = {
 
 export default function FoodSearchScreen() {
   const theme = useTheme();
-  const [query, setQuery] = useState('');
+  const params = useLocalSearchParams<{ q?: string }>();
+  const [query, setQuery] = useState(params.q || '');
   const [results, setResults] = useState<FoodItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadingRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   const canSearch = useMemo(() => query.trim().length >= 2, [query]);
 
   const runSearch = useCallback(async (pageNum = 1, append = false) => {
-    if (!canSearch || loading) return;
+    if (query.trim().length < 2 || loadingRef.current) return;
+    // Cancel any in-flight request
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    loadingRef.current = true;
     setLoading(true);
     setError('');
     try {
       const data = await foodApi.search(query.trim(), pageNum);
+      if (controller.signal.aborted) return;
       const foods = Array.isArray(data?.foods) ? data.foods : Array.isArray(data) ? data : [];
       setResults((prev) => (append ? [...prev, ...foods] : foods));
       setPage(pageNum);
       setHasMore(foods.length >= 20);
     } catch (e: any) {
+      if (controller.signal.aborted) return;
       setError(e?.message || 'Failed to search foods.');
       if (!append) setResults([]);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        loadingRef.current = false;
+        setLoading(false);
+      }
     }
-  }, [canSearch, loading, query]);
+  }, [query]);
 
   // Debounced auto-search on query change
   useEffect(() => {
@@ -65,7 +78,7 @@ export default function FoodSearchScreen() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query]);
+  }, [query, runSearch]);
 
   const loadMore = () => {
     if (!loading && hasMore) {
@@ -141,7 +154,7 @@ export default function FoodSearchScreen() {
                       <Text style={[styles.meta, { color: theme.textTertiary }]}>{item.data_type}</Text>
                     )}
                     {typeof item.calories_kcal === 'number' && (
-                      <Text style={[styles.meta, { color: theme.primary }]}>{item.calories_kcal} kcal</Text>
+                      <Text style={[styles.meta, { color: theme.primary }]}>{item.calories_kcal} calories</Text>
                     )}
                   </View>
                 </Card>

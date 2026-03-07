@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import {
+  Animated,
   View,
   Text,
   StyleSheet,
@@ -8,27 +9,45 @@ import {
   Dimensions,
   RefreshControl,
   FlatList,
-  Animated,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { ScreenContainer } from '../../components/ScreenContainer';
 import { Card } from '../../components/GradientCard';
 import { XPBar } from '../../components/XPBar';
 import { StreakBadge } from '../../components/StreakBadge';
+import { MetabolicRing } from '../../components/MetabolicRing';
+import { MetabolicStreakBadge } from '../../components/MetabolicStreakBadge';
+import { XPToast } from '../../components/XPToast';
 import { useTheme } from '../../hooks/useTheme';
 import { useAuthStore } from '../../stores/authStore';
 import { useGamificationStore } from '../../stores/gamificationStore';
 import { useMealPlanStore } from '../../stores/mealPlanStore';
+import { useMetabolicBudgetStore, getTierConfig } from '../../stores/metabolicBudgetStore';
 import { gameApi, recipeApi, nutritionApi } from '../../services/api';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
-import { getLevelTitle } from '../../constants/Config';
 
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = width * 0.42;
 const RING_SIZE = 100;
 const RING_STROKE = 8;
+const CHRONO_MODE_TAB_WIDTH = 56;
+const CHRONO_MODE_TAB_GAP = 4;
+const CHRONO_MODE_BAR_INSET = 4;
+const CHRONO_MODE_TAB_HEIGHT = 32;
+const DAY_CONTENT_WIDTH = width - Spacing.xl * 2;
+const DAY_PILL_WIDTH = DAY_CONTENT_WIDTH / 7;
+const TODAY_DAY_INDEX = 22; // offset 0 in [-22..+8]
+const INITIAL_DAY_INDEX = Math.max(0, TODAY_DAY_INDEX - 3);
+
+const toDateKey = (date: Date): string => {
+  const y = date.getFullYear();
+  const m = `${date.getMonth() + 1}`.padStart(2, '0');
+  const d = `${date.getDate()}`.padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
 
 const DAILY_TIPS = [
   'Swap refined vegetable oils with extra virgin olive oil or avocado oil. They\'re rich in healthy monounsaturated fats and antioxidants.',
@@ -59,6 +78,8 @@ const MEAL_TYPE_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
 };
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+const MACRO_KEYS = new Set(['calories', 'protein', 'carbs', 'fat', 'fiber']);
 
 interface QuickAction {
   icon: keyof typeof Ionicons.glyphMap;
@@ -91,6 +112,13 @@ interface NutrientComparison {
 interface DailySummary {
   daily_score: number;
   comparison: Record<string, NutrientComparison>;
+  logs?: Array<{
+    id?: string;
+    title?: string;
+    meal_type?: string;
+    servings?: number;
+    source_type?: string;
+  }>;
 }
 
 // ── Circular Progress Ring ─────────────────────────────────────────────
@@ -175,6 +203,10 @@ export default function HomeScreen() {
   const nutritionStreak = useGamificationStore((s) => s.nutritionStreak);
   const currentPlan = useMealPlanStore((s) => s.currentPlan);
   const loadCurrentPlan = useMealPlanStore((s) => s.loadCurrentPlan);
+  const dailyMES = useMetabolicBudgetStore((s) => s.dailyScore);
+  const remainingBudget = useMetabolicBudgetStore((s) => s.remainingBudget);
+  const metabolicStreak = useMetabolicBudgetStore((s) => s.streak);
+  const fetchMetabolic = useMetabolicBudgetStore((s) => s.fetchAll);
   const [weeklyStats, setWeeklyStats] = useState<WeeklyStats>({
     meals_cooked: 0,
     recipes_saved: 0,
@@ -185,6 +217,57 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [recommended, setRecommended] = useState<RecommendedRecipe[]>([]);
   const [dailySummary, setDailySummary] = useState<DailySummary | null>(null);
+  const [xpToast, setXpToast] = useState<string | null>(null);
+  const [xpToastIcon, setXpToastIcon] = useState<string>('flash');
+  const [chronoPanelView, setChronoPanelView] = useState<'snapshot' | 'logged' | 'activity'>('snapshot');
+  const [selectedDayKey, setSelectedDayKey] = useState<string>(() => toDateKey(new Date()));
+  const chronoModeAnim = useRef(new Animated.Value(0)).current;
+  const chronoPanelOpacity = useRef(new Animated.Value(1)).current;
+  const chronoPanelLift = useRef(new Animated.Value(0)).current;
+  const weekPulse = useRef(new Animated.Value(0)).current;
+  const scrollY = useRef(new Animated.Value(0)).current;
+  const weekListRef = useRef<FlatList<any>>(null);
+
+  const weekDays = useMemo(() => {
+    const now = new Date();
+    const anchor = new Date(now);
+    anchor.setHours(0, 0, 0, 0);
+
+    return Array.from({ length: 31 }).map((_, idx) => {
+      const offset = idx - 22; // range: -22 days to +8 days
+      const d = new Date(anchor);
+      d.setDate(anchor.getDate() + offset);
+      return {
+        key: d.toISOString(),
+        dayKey: toDateKey(d),
+        label: d.toLocaleDateString('en-US', { weekday: 'short' }),
+        date: d.getDate(),
+        offset,
+        isToday:
+          d.getFullYear() === now.getFullYear() &&
+          d.getMonth() === now.getMonth() &&
+          d.getDate() === now.getDate(),
+      };
+    });
+  }, []);
+
+  useEffect(() => {
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(weekPulse, { toValue: 1, duration: 850, useNativeDriver: true }),
+        Animated.timing(weekPulse, { toValue: 0, duration: 850, useNativeDriver: true }),
+      ])
+    );
+    pulse.start();
+    return () => pulse.stop();
+  }, [weekPulse]);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      weekListRef.current?.scrollToIndex({ index: INITIAL_DAY_INDEX, animated: false });
+    }, 0);
+    return () => clearTimeout(t);
+  }, []);
 
   const loadStats = async () => {
     setStatsError(false);
@@ -239,6 +322,7 @@ export default function HomeScreen() {
       loadRecommended(),
       loadCurrentPlan(),
       loadDailyNutrition(),
+      fetchMetabolic(),
     ]);
     setRefreshing(false);
   }, []);
@@ -250,16 +334,55 @@ export default function HomeScreen() {
     loadRecommended();
     loadCurrentPlan();
     loadDailyNutrition();
+    fetchMetabolic();
   }, []);
 
+  // Show toast for metabolic streak milestones and daily tier XP
+  const prevStreakRef = React.useRef<number | null>(null);
+  useEffect(() => {
+    if (!metabolicStreak) return;
+    const current = metabolicStreak.current_streak;
+    const prev = prevStreakRef.current;
+    prevStreakRef.current = current;
+
+    if (prev === null || prev === current || current === 0) return;
+
+    // Milestone streaks
+    const milestones = [30, 14, 7, 3];
+    for (const ms of milestones) {
+      if (current >= ms && (prev < ms)) {
+        const labels: Record<number, string> = { 3: 'Bronze', 7: 'Silver', 14: 'Gold', 30: 'Diamond' };
+        setXpToastIcon('flash');
+        setXpToast(`Energy Streak: ${labels[ms]}! 🔥 ${current} days`);
+        return;
+      }
+    }
+
+    // Generic streak growth
+    if (current > prev) {
+      setXpToastIcon('battery-charging');
+      setXpToast(`Energy streak: ${current} days!`);
+    }
+  }, [metabolicStreak]);
+
   // Today's meals from plan
-  const todayName = DAYS[new Date().getDay()];
+  const selectedDate = useMemo(() => {
+    const found = weekDays.find((d) => d.dayKey === selectedDayKey);
+    if (found) {
+      const [y, m, day] = found.dayKey.split('-').map(Number);
+      return new Date(y, (m || 1) - 1, day || 1);
+    }
+    return new Date();
+  }, [weekDays, selectedDayKey]);
+  const selectedDayName = DAYS[selectedDate.getDay()];
+  const selectedDayNameLong = selectedDate.toLocaleDateString('en-US', { weekday: 'long' });
+
   const todayMeals = useMemo(() => {
     if (!currentPlan?.items) return [];
     return currentPlan.items.filter(
-      (item) => item.day_of_week?.toLowerCase() === todayName.toLowerCase()
+      (item) => item.day_of_week?.toLowerCase() === selectedDayName.toLowerCase()
     );
-  }, [currentPlan, todayName]);
+  }, [currentPlan, selectedDayName]);
 
   // Nutrition ring color based on score
   const ringColor = useMemo(() => {
@@ -271,7 +394,6 @@ export default function HomeScreen() {
   }, [dailySummary]);
 
   // Top 2 micronutrients to highlight (lowest % — areas to improve)
-  const MACRO_KEYS = new Set(['calories', 'protein', 'carbs', 'fat', 'fiber']);
   const topMicros = useMemo(() => {
     const comp = dailySummary?.comparison;
     if (!comp) return [];
@@ -288,6 +410,76 @@ export default function HomeScreen() {
       .sort((a, b) => a.pct - b.pct)
       .slice(0, 2);
   }, [dailySummary]);
+
+  const calorieConsumed = Math.round(dailySummary?.comparison?.calories?.consumed ?? 0);
+  const calorieTarget = Math.round(dailySummary?.comparison?.calories?.target ?? 0);
+  const proteinConsumed = Math.round(dailySummary?.comparison?.protein?.consumed ?? 0);
+  const proteinTarget = Math.round(dailySummary?.comparison?.protein?.target ?? 0);
+  const carbsConsumed = Math.round(dailySummary?.comparison?.carbs?.consumed ?? 0);
+  const carbsTarget = Math.round(dailySummary?.comparison?.carbs?.target ?? 0);
+  const fatConsumed = Math.round(dailySummary?.comparison?.fat?.consumed ?? 0);
+  const fatTarget = Math.round(dailySummary?.comparison?.fat?.target ?? 0);
+  const mesDisplayScore = Math.round(dailyMES?.score?.display_score ?? dailyMES?.score?.total_score ?? 0);
+  const mesTierKey = dailyMES?.score?.display_tier ?? dailyMES?.score?.tier ?? 'critical';
+  const mesTierLabelMap: Record<string, string> = {
+    optimal: 'Elite Fuel',
+    good: 'Momentum',
+    moderate: 'Steady Burn',
+    low: 'Low Energy',
+    critical: 'Energy Drain',
+    // Legacy aliases
+    stable: 'Momentum',
+    shaky: 'Steady Burn',
+    crash_risk: 'Energy Drain',
+  };
+  const mesTierLabel = mesTierLabelMap[mesTierKey] || 'Energy Drain';
+  const mesTierColor = getTierConfig(mesTierKey).color;
+  const loggedMeals = useMemo(
+    () =>
+      (dailySummary?.logs || [])
+        .filter((log) => !log.source_type || log.source_type === 'recipe' || log.source_type === 'food')
+        .slice(0, 3),
+    [dailySummary]
+  );
+
+  const openChronoPanelRoute = (mode: 'snapshot' | 'logged' | 'activity') => {
+    if (mode === 'snapshot') {
+      router.push('/(tabs)/chronometer' as any);
+      return;
+    }
+    if (mode === 'logged') {
+      router.push('/food/meals' as any);
+      return;
+    }
+    router.push('/(tabs)/chronometer' as any);
+  };
+
+  const handleChronoModePress = (mode: 'snapshot' | 'logged' | 'activity') => {
+    if (chronoPanelView === mode) {
+      openChronoPanelRoute(mode);
+      return;
+    }
+    const modeOrder: Array<'snapshot' | 'logged' | 'activity'> = ['snapshot', 'logged', 'activity'];
+    const nextIndex = modeOrder.indexOf(mode);
+
+    Animated.spring(chronoModeAnim, {
+      toValue: nextIndex,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 8,
+    }).start();
+
+    Animated.parallel([
+      Animated.timing(chronoPanelOpacity, { toValue: 0, duration: 90, useNativeDriver: true }),
+      Animated.timing(chronoPanelLift, { toValue: 6, duration: 90, useNativeDriver: true }),
+    ]).start(() => {
+      setChronoPanelView(mode);
+      Animated.parallel([
+        Animated.timing(chronoPanelOpacity, { toValue: 1, duration: 180, useNativeDriver: true }),
+        Animated.spring(chronoPanelLift, { toValue: 0, useNativeDriver: true, speed: 20, bounciness: 5 }),
+      ]).start();
+    });
+  };
 
   const quickActions: QuickAction[] = [
     {
@@ -375,9 +567,15 @@ export default function HomeScreen() {
 
   return (
     <ScreenContainer>
-      <ScrollView
+      <XPToast message={xpToast} icon={xpToastIcon} onDismissed={() => setXpToast(null)} />
+      <Animated.ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scroll}
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+          { useNativeDriver: false }
+        )}
+        scrollEventThrottle={16}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.primary} />}
       >
         {/* Header */}
@@ -388,6 +586,9 @@ export default function HomeScreen() {
           </View>
           <View style={styles.headerRight}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
+              {metabolicStreak && metabolicStreak.current_streak > 0 && (
+                <MetabolicStreakBadge currentStreak={metabolicStreak.current_streak} compact />
+              )}
               {nutritionStreak > 0 && (
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(34,197,94,0.12)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: BorderRadius.full }}>
                   <Ionicons name="leaf" size={14} color="#22C55E" />
@@ -415,40 +616,311 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* XP Progress */}
-        <Card style={{ marginBottom: Spacing.xl }}>
-          <XPBar xp={user?.xp_points || 0} />
-          {stats?.level_title ? (
-            <Text style={{ color: theme.textSecondary, fontSize: FontSize.xs, textAlign: 'center', marginTop: 4 }}>
-              {stats.level_title}
-            </Text>
-          ) : null}
-        </Card>
-
-        {/* ── Recommended For You ─────────────────────────────────────── */}
-        {recommended.length > 0 && (
-          <View style={{ marginBottom: Spacing.xl }}>
-            <View style={s.sectionHeaderRow}>
-              <Text style={[styles.sectionTitle, { color: theme.text, marginBottom: 0 }]}>Recommended For You</Text>
-              <TouchableOpacity
-                onPress={() => router.push({ pathname: '/(tabs)/meals', params: { tab: 'browse' } } as any)}
-                hitSlop={12}
-              >
-                <Text style={[s.seeAll, { color: theme.primary }]}>See All</Text>
-              </TouchableOpacity>
-            </View>
+        <Animated.View
+          style={[
+            styles.weekStripWrap,
+            {
+              height: scrollY.interpolate({
+                inputRange: [0, 80],
+                outputRange: [72, 44],
+                extrapolate: 'clamp',
+              }),
+            },
+          ]}
+        >
+          <Animated.View
+            style={[
+              styles.weekStrip,
+              {
+                opacity: scrollY.interpolate({
+                  inputRange: [0, 80],
+                  outputRange: [1, 0.92],
+                  extrapolate: 'clamp',
+                }),
+              },
+            ]}
+          >
             <FlatList
-              data={recommended}
-              keyExtractor={(item) => item.id}
+              ref={weekListRef}
               horizontal
+              data={weekDays}
+              keyExtractor={(item) => item.key}
               showsHorizontalScrollIndicator={false}
-              renderItem={renderRecipeCard}
-              contentContainerStyle={{ paddingTop: Spacing.md }}
+              bounces={false}
+              overScrollMode="never"
+              pagingEnabled
+              decelerationRate="fast"
+              initialScrollIndex={INITIAL_DAY_INDEX}
+              getItemLayout={(_, index) => ({
+                length: DAY_PILL_WIDTH,
+                offset: DAY_PILL_WIDTH * index,
+                index,
+              })}
+              onScrollToIndexFailed={() => {}}
+              contentContainerStyle={styles.weekListContent}
+              renderItem={({ item: day }) => {
+                const pulseScale = weekPulse.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [1, 1.08],
+                });
+                const isSelected = day.dayKey === selectedDayKey;
+                const isToday = day.isToday;
+                return (
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => setSelectedDayKey(day.dayKey)}
+                    style={styles.weekItem}
+                  >
+                    <Text
+                      style={[
+                        styles.weekDayLabel,
+                        { color: isSelected || isToday ? theme.text : theme.textSecondary },
+                        isSelected && styles.weekDayLabelActive,
+                      ]}
+                    >
+                      {day.label}
+                    </Text>
+                    <Animated.View
+                      style={[
+                        styles.weekRing,
+                        isSelected && styles.weekRingToday,
+                        {
+                          borderColor: isSelected ? theme.primary : isToday ? theme.primary + '88' : theme.border,
+                          backgroundColor: isSelected ? undefined : isToday ? theme.primary + '0D' : undefined,
+                        },
+                        isSelected && { transform: [{ scale: pulseScale }] },
+                      ]}
+                    >
+                      <Text style={[styles.weekDate, { color: isSelected ? theme.primary : theme.text }]}>{day.date}</Text>
+                    </Animated.View>
+                  </TouchableOpacity>
+                );
+              }}
             />
-          </View>
-        )}
+          </Animated.View>
+        </Animated.View>
 
-        {/* ── Today's Plan + Nutrition ────────────────────────────────── */}
+        {/* Chronometer Snapshot / Logged Panel */}
+        <View style={styles.chronoWrap}>
+          <Animated.View
+            style={[
+              styles.chronoMain,
+              {
+                opacity: chronoPanelOpacity,
+                transform: [{ translateY: chronoPanelLift }],
+              },
+            ]}
+          >
+            {chronoPanelView === 'snapshot' ? (
+                <View style={styles.chronoSnapshotWrap}>
+                  <TouchableOpacity
+                    activeOpacity={0.88}
+                    onPress={() => openChronoPanelRoute('snapshot')}
+                  >
+                    <LinearGradient
+                      colors={['#FFFFFF', '#FBFCF9']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={[styles.chronoHero, { borderColor: theme.primary + '22' }]}
+                    >
+                      <View style={styles.chronoHeroLeft}>
+                        <Text style={[styles.chronoEyebrow, { color: theme.primary }]}>Daily Fuel</Text>
+                        <View style={styles.chronoValueRow}>
+                          <Text style={[styles.chronoValue, { color: theme.text }]}>
+                            {calorieConsumed}
+                            <Text style={[styles.chronoValueTarget, { color: theme.textSecondary }]}> / {calorieTarget || 0}</Text>
+                          </Text>
+                          <Text style={[styles.chronoLabelInline, { color: theme.textSecondary }]}>cal</Text>
+                        </View>
+                        <View style={styles.chronoPillsRow}>
+                          <View style={[styles.chronoPill, { backgroundColor: 'rgba(34,197,94,0.12)' }]}>
+                            <Ionicons name="barbell-outline" size={12} color={theme.primary} />
+                            <Text style={[styles.chronoPillText, { color: theme.primary }]}>
+                              {Math.max((proteinTarget || 0) - proteinConsumed, 0)}g protein left
+                            </Text>
+                          </View>
+                          <View style={[styles.chronoPill, { backgroundColor: 'rgba(245,158,11,0.14)' }]}>
+                            <Ionicons name="leaf-outline" size={12} color="#D97706" />
+                            <Text style={[styles.chronoPillText, { color: '#D97706' }]}>
+                              {Math.round(remainingBudget?.sugar_headroom_g ?? 0)}g carb room
+                            </Text>
+                          </View>
+                        </View>
+                        <View style={[styles.chronoCalTrack, { backgroundColor: theme.surfaceHighlight }]}>
+                          <LinearGradient
+                            colors={[theme.primary, '#7DD3A7'] as any}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={[
+                              styles.chronoCalFill,
+                              { width: `${Math.max(6, Math.min(100, calorieTarget > 0 ? (calorieConsumed / calorieTarget) * 100 : 0))}%` },
+                            ]}
+                          />
+                        </View>
+                      </View>
+                      <View style={[styles.chronoHeroScorePanel, { backgroundColor: '#FCFCFA' }]}>
+                        <View style={[styles.chronoMesPill, styles.chronoMesPillCentered, { backgroundColor: mesTierColor + '18' }]}>
+                          <Text style={[styles.chronoMesPillText, { color: mesTierColor }]}>{mesTierLabel}</Text>
+                        </View>
+                        <View style={styles.chronoRingWrap}>
+                          <MetabolicRing
+                            score={dailyMES?.score?.display_score ?? dailyMES?.score?.total_score ?? 0}
+                            tier={dailyMES?.score?.display_tier ?? dailyMES?.score?.tier ?? 'crash_risk'}
+                            size={106}
+                            showLabel
+                          />
+                        </View>
+                      </View>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                  <View style={styles.chronoMiniRow}>
+                    {[
+                      { label: 'Protein eaten', consumed: proteinConsumed, target: proteinTarget, icon: 'barbell-outline' as const, color: '#22C55E' },
+                      { label: 'Carbs eaten', consumed: carbsConsumed, target: carbsTarget, icon: 'nutrition-outline' as const, color: '#F59E0B' },
+                      { label: 'Fat eaten', consumed: fatConsumed, target: fatTarget, icon: 'water-outline' as const, color: '#3B82F6' },
+                    ].map((item) => (
+                      <TouchableOpacity
+                        key={item.label}
+                        activeOpacity={0.88}
+                        onPress={() => openChronoPanelRoute('snapshot')}
+                        style={[styles.chronoMiniCard, { backgroundColor: theme.card.background, borderColor: theme.border }]}
+                      >
+                        <View style={[styles.chronoMiniAccent, { backgroundColor: item.color }]} />
+                        <Text style={[styles.chronoMiniValue, { color: theme.text }]}>
+                          {item.consumed}
+                          <Text style={[styles.chronoMiniTarget, { color: theme.textSecondary }]}>/{item.target || 0}g</Text>
+                        </Text>
+                        <Text style={[styles.chronoMiniLabel, { color: theme.textSecondary }]}>{item.label}</Text>
+                        <View style={[styles.chronoMiniIcon, { backgroundColor: item.color + '16' }]}>
+                          <Ionicons name={item.icon} size={14} color={item.color} />
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+            ) : chronoPanelView === 'logged' ? (
+                <View style={[styles.chronoLoggedCard, styles.chronoFixedCard, { backgroundColor: theme.card.background, borderColor: theme.border }]}>
+                  <View style={styles.chronoLoggedHeader}>
+                    <Text style={[styles.chronoLoggedTitle, { color: theme.text }]}>Today's Meals Logged</Text>
+                    <View style={[styles.chronoLoggedCountPill, { backgroundColor: theme.primaryMuted }]}>
+                      <Text style={[styles.chronoLoggedCountText, { color: theme.primary }]}>{loggedMeals.length}</Text>
+                    </View>
+                  </View>
+                  {loggedMeals.length > 0 ? (
+                    <View style={styles.chronoLoggedList}>
+                      {loggedMeals.map((log, idx) => {
+                        const icon = MEAL_TYPE_ICONS[(log.meal_type || '').toLowerCase()] || 'restaurant-outline';
+                        return (
+                          <View key={`${log.id || log.title || 'log'}-${idx}`} style={[styles.chronoLoggedRow, idx < loggedMeals.length - 1 && { borderBottomWidth: 1, borderBottomColor: theme.surfaceHighlight }]}>
+                            <View style={[styles.chronoLoggedIcon, { backgroundColor: theme.surfaceHighlight }]}>
+                              <Ionicons name={icon} size={14} color={theme.primary} />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.chronoLoggedMealName, { color: theme.text }]} numberOfLines={1}>
+                                {log.title || 'Meal'}
+                              </Text>
+                              <Text style={[styles.chronoLoggedMeta, { color: theme.textSecondary }]}>
+                                {(log.meal_type || 'meal').toLowerCase()}
+                              </Text>
+                            </View>
+                            <Text style={[styles.chronoLoggedServings, { color: theme.textTertiary }]}>{log.servings || 1}x</Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  ) : (
+                    <View style={styles.chronoLoggedEmpty}>
+                      <Ionicons name="restaurant-outline" size={20} color={theme.textTertiary} />
+                      <Text style={[styles.chronoLoggedEmptyText, { color: theme.textSecondary }]}>No meals logged yet today</Text>
+                    </View>
+                  )}
+                </View>
+              ) : (
+                <View style={[styles.chronoLoggedCard, styles.chronoFixedCard, { backgroundColor: theme.card.background, borderColor: theme.border }]}>
+                  <View style={styles.chronoLoggedHeader}>
+                    <Text style={[styles.chronoLoggedTitle, { color: theme.text }]}>Activity Snapshot</Text>
+                    <View style={[styles.chronoLoggedCountPill, { backgroundColor: theme.primaryMuted }]}>
+                      <Text style={[styles.chronoLoggedCountText, { color: theme.primary }]}>Today</Text>
+                    </View>
+                  </View>
+                  <View style={styles.activityGrid}>
+                    {[
+                      { label: 'Steps', value: '7,842', sub: 'of 10,000', icon: 'walk-outline' as const, color: '#22C55E' },
+                      { label: 'Active Min', value: '42', sub: 'of 60', icon: 'time-outline' as const, color: '#F59E0B' },
+                      { label: 'Distance', value: '3.9 mi', sub: 'goal 5.0', icon: 'map-outline' as const, color: '#3B82F6' },
+                      { label: 'Burned', value: '468', sub: 'calories active', icon: 'flame-outline' as const, color: '#EF4444' },
+                    ].map((item) => (
+                      <View key={item.label} style={[styles.activityCard, { backgroundColor: '#FFFFFF', borderColor: theme.border }]}>
+                        <View style={[styles.activityIcon, { backgroundColor: item.color + '18' }]}>
+                          <Ionicons name={item.icon} size={14} color={item.color} />
+                        </View>
+                        <Text style={[styles.activityValue, { color: theme.text }]}>{item.value}</Text>
+                        <Text style={[styles.activityLabel, { color: theme.textSecondary }]}>{item.label}</Text>
+                        <Text style={[styles.activitySub, { color: theme.textTertiary }]}>{item.sub}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+          </Animated.View>
+
+          <BlurView intensity={45} tint="light" style={[styles.chronoModeBar, { borderColor: theme.border }]}>
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.chronoModeActiveBubble,
+                {
+                  backgroundColor: theme.primaryMuted,
+                  borderColor: theme.border,
+                  transform: [
+                    {
+                      translateX: chronoModeAnim.interpolate({
+                        inputRange: [0, 1, 2],
+                        outputRange: [
+                          CHRONO_MODE_BAR_INSET,
+                          CHRONO_MODE_BAR_INSET + CHRONO_MODE_TAB_WIDTH + CHRONO_MODE_TAB_GAP,
+                          CHRONO_MODE_BAR_INSET + (CHRONO_MODE_TAB_WIDTH + CHRONO_MODE_TAB_GAP) * 2,
+                        ],
+                      }),
+                    },
+                  ],
+                },
+              ]}
+            />
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => handleChronoModePress('snapshot')}
+              style={[
+                styles.chronoModeTab,
+                { backgroundColor: 'transparent' },
+              ]}
+            >
+              <Ionicons name="analytics-outline" size={18} color={chronoPanelView === 'snapshot' ? theme.primary : theme.textSecondary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => handleChronoModePress('logged')}
+              style={[
+                styles.chronoModeTab,
+                { backgroundColor: 'transparent' },
+              ]}
+            >
+              <Ionicons name="restaurant-outline" size={18} color={chronoPanelView === 'logged' ? theme.primary : theme.textSecondary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => handleChronoModePress('activity')}
+              style={[
+                styles.chronoModeTab,
+                { backgroundColor: 'transparent' },
+              ]}
+            >
+              <Ionicons name="walk-outline" size={18} color={chronoPanelView === 'activity' ? theme.primary : theme.textSecondary} />
+            </TouchableOpacity>
+          </BlurView>
+        </View>
+
+        {/* ── Today's Plan ─────────────────────────────────────────────── */}
         <View style={{ marginBottom: Spacing.xl }}>
           <TouchableOpacity
             activeOpacity={0.8}
@@ -458,8 +930,8 @@ export default function HomeScreen() {
               {/* Card header */}
               <View style={s.todayHeader}>
                 <View style={{ flex: 1 }}>
-                  <Text style={[s.todayTitle, { color: theme.text }]}>Today</Text>
-                  <Text style={[s.todayDay, { color: theme.textSecondary }]}>{todayName}</Text>
+                  <Text style={[s.todayTitle, { color: theme.text }]}>Today's Plan</Text>
+                  <Text style={[s.todayDay, { color: theme.textSecondary }]}>{selectedDayNameLong}</Text>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color={theme.textTertiary} />
               </View>
@@ -498,52 +970,42 @@ export default function HomeScreen() {
                   </TouchableOpacity>
                 </View>
               )}
-
-              {/* Nutrition overview — ring + macro badges */}
-              <View style={[s.nutritionSection, { borderTopWidth: 1, borderTopColor: theme.surfaceHighlight }]}>
-                <NutritionRing score={dailySummary?.daily_score ?? 0} color={ringColor} />
-                <View style={s.macroBadges}>
-                  <MacroBadge label="Calories" pct={dailySummary?.comparison?.calories?.pct ?? 0} theme={theme} />
-                  <MacroBadge label="Protein" pct={dailySummary?.comparison?.protein?.pct ?? 0} theme={theme} />
-                  {topMicros.length >= 1 && (
-                    <MacroBadge label={topMicros[0].label} pct={topMicros[0].pct} theme={theme} />
-                  )}
-                  {topMicros.length >= 2 && (
-                    <MacroBadge label={topMicros[1].label} pct={topMicros[1].pct} theme={theme} />
-                  )}
-                  {topMicros.length === 0 && (
-                    <>
-                      <MacroBadge label="Vitamin D" pct={dailySummary?.comparison?.vitamin_d_mcg?.pct ?? 0} theme={theme} />
-                      <MacroBadge label="Calcium" pct={dailySummary?.comparison?.calcium_mg?.pct ?? 0} theme={theme} />
-                    </>
-                  )}
-                </View>
-              </View>
-
-              {/* CTA strip */}
-              <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={() => router.push('/(tabs)/chronometer' as any)}
-              >
-                <LinearGradient
-                  colors={['rgba(59,130,246,0.08)', 'rgba(139,92,246,0.12)']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={s.trackCta}
-                >
-                  <View style={s.trackCtaIcon}>
-                    <Ionicons name="sparkles" size={18} color="#8B5CF6" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[s.trackCtaTitle, { color: theme.text }]}>Track your nutrition</Text>
-                    <Text style={[s.trackCtaSub, { color: theme.textTertiary }]}>Log meals & hit your targets</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color={theme.textTertiary} />
-                </LinearGradient>
-              </TouchableOpacity>
             </Card>
           </TouchableOpacity>
         </View>
+
+        {/* ── Recommended For You ─────────────────────────────────────── */}
+        {recommended.length > 0 && (
+          <View style={{ marginBottom: Spacing.xl }}>
+            <View style={s.sectionHeaderRow}>
+              <Text style={[styles.sectionTitle, { color: theme.text, marginBottom: 0 }]}>Recommended For You</Text>
+              <TouchableOpacity
+                onPress={() => router.push({ pathname: '/(tabs)/meals', params: { tab: 'browse' } } as any)}
+                hitSlop={12}
+              >
+                <Text style={[s.seeAll, { color: theme.primary }]}>See All</Text>
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={recommended}
+              keyExtractor={(item) => item.id}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              renderItem={renderRecipeCard}
+              contentContainerStyle={{ paddingTop: Spacing.md }}
+            />
+          </View>
+        )}
+
+        {/* XP Progress */}
+        <Card style={{ marginBottom: Spacing.xl }}>
+          <XPBar xp={user?.xp_points || 0} />
+          {stats?.level_title ? (
+            <Text style={{ color: theme.textSecondary, fontSize: FontSize.xs, textAlign: 'center', marginTop: 4 }}>
+              {stats.level_title}
+            </Text>
+          ) : null}
+        </Card>
 
         {/* Quick Actions */}
         <Text style={[styles.sectionTitle, { color: theme.text }]}>Quick Actions</Text>
@@ -651,13 +1113,15 @@ export default function HomeScreen() {
                     <Ionicons
                       name={
                         quest.quest_type === 'log_meal' ? 'restaurant-outline' :
+                        quest.quest_type === 'logging' ? 'restaurant-outline' :
                         quest.quest_type === 'healthify' ? 'heart-outline' :
                         quest.quest_type === 'score' ? 'trophy-outline' :
                         quest.quest_type === 'cook' ? 'flame-outline' :
+                        quest.quest_type === 'metabolic' ? 'flash-outline' :
                         'star-outline'
                       }
                       size={16}
-                      color={theme.textSecondary}
+                      color={quest.quest_type === 'metabolic' ? theme.accent : theme.textSecondary}
                     />
                   )}
                 </View>
@@ -739,7 +1203,7 @@ export default function HomeScreen() {
         )}
 
         <View style={{ height: Spacing.huge }} />
-      </ScrollView>
+      </Animated.ScrollView>
     </ScreenContainer>
   );
 }
@@ -922,6 +1386,7 @@ const s = StyleSheet.create({
 const styles = StyleSheet.create({
   scroll: {
     paddingTop: Spacing.lg,
+    paddingBottom: 120,
   },
   header: {
     flexDirection: 'row',
@@ -963,6 +1428,331 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xxl,
     fontWeight: '800',
     letterSpacing: -0.3,
+  },
+  chronoWrap: {
+    marginBottom: Spacing.xl,
+  },
+  chronoMain: {
+    width: '100%',
+    height: 294,
+  },
+  chronoSnapshotWrap: {
+    height: '100%',
+    justifyContent: 'flex-start',
+  },
+  chronoHero: {
+    borderWidth: 1,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  chronoHeroLeft: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  chronoEyebrow: {
+    fontSize: FontSize.xs,
+    fontWeight: '800',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: Spacing.xs,
+  },
+  chronoValue: {
+    fontSize: FontSize.hero,
+    fontWeight: '800',
+    letterSpacing: -0.6,
+  },
+  chronoValueRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  chronoValueTarget: {
+    fontSize: FontSize.xxl,
+    fontWeight: '600',
+  },
+  chronoLabelInline: {
+    fontSize: FontSize.md,
+    fontWeight: '600',
+    marginBottom: 7,
+  },
+  chronoMesPill: {
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    marginBottom: 2,
+    borderRadius: BorderRadius.full,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+  },
+  chronoMesPillText: {
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+  },
+  chronoPillsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.xs,
+    marginTop: Spacing.xs + 2,
+  },
+  chronoPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 5,
+    borderRadius: BorderRadius.full,
+  },
+  chronoPillText: {
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+  },
+  chronoCalTrack: {
+    height: 7,
+    borderRadius: BorderRadius.full,
+    overflow: 'hidden',
+    marginTop: Spacing.xs + 2,
+  },
+  chronoCalFill: {
+    height: '100%',
+    borderRadius: BorderRadius.full,
+  },
+  chronoHeroScorePanel: {
+    width: 122,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.sm + 2,
+    paddingHorizontal: Spacing.xs,
+  },
+  chronoRingWrap: {
+    width: 104,
+    height: 104,
+    borderRadius: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chronoMesPillCentered: {
+    alignSelf: 'center',
+    marginTop: 0,
+    marginBottom: Spacing.xs + 4,
+  },
+  chronoScorePanelCaption: {
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+  },
+  chronoMiniRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginTop: 8,
+  },
+  chronoMiniCard: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.sm + 2,
+    gap: 4,
+    overflow: 'hidden',
+  },
+  chronoMiniAccent: {
+    width: 24,
+    height: 3,
+    borderRadius: BorderRadius.full,
+    marginBottom: 2,
+  },
+  chronoMiniValue: {
+    fontSize: FontSize.xl,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  chronoMiniTarget: {
+    fontSize: FontSize.md,
+    fontWeight: '500',
+  },
+  chronoMiniLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: '500',
+  },
+  chronoMiniIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chronoLoggedCard: {
+    borderWidth: 1,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.md,
+    minHeight: 218,
+  },
+  chronoFixedCard: {
+    height: '100%',
+  },
+  chronoLoggedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.sm,
+  },
+  chronoLoggedTitle: {
+    fontSize: FontSize.md,
+    fontWeight: '800',
+  },
+  chronoLoggedCountPill: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 3,
+    borderRadius: BorderRadius.full,
+  },
+  chronoLoggedCountText: {
+    fontSize: FontSize.xs,
+    fontWeight: '800',
+  },
+  chronoLoggedList: {
+    gap: 0,
+  },
+  chronoLoggedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+  },
+  chronoLoggedIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chronoLoggedMealName: {
+    fontSize: FontSize.sm,
+    fontWeight: '600',
+  },
+  chronoLoggedMeta: {
+    fontSize: FontSize.xs,
+    marginTop: 1,
+  },
+  chronoLoggedServings: {
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+  },
+  chronoLoggedEmpty: {
+    flex: 1,
+    minHeight: 130,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+  },
+  chronoLoggedEmptyText: {
+    fontSize: FontSize.sm,
+    fontWeight: '500',
+  },
+  activityGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+    marginTop: 2,
+  },
+  activityCard: {
+    width: '48.5%',
+    borderWidth: 1,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.sm,
+    gap: 4,
+  },
+  activityIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  activityValue: {
+    fontSize: FontSize.md,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  activityLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: '600',
+  },
+  activitySub: {
+    fontSize: FontSize.xs - 1,
+    fontWeight: '500',
+  },
+  chronoModeBar: {
+    marginTop: 10,
+    alignSelf: 'center',
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+    paddingVertical: 3,
+    paddingHorizontal: CHRONO_MODE_BAR_INSET,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: CHRONO_MODE_TAB_GAP,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  chronoModeActiveBubble: {
+    position: 'absolute',
+    top: 3,
+    bottom: 3,
+    width: CHRONO_MODE_TAB_WIDTH,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+  },
+  chronoModeTab: {
+    width: CHRONO_MODE_TAB_WIDTH,
+    minHeight: CHRONO_MODE_TAB_HEIGHT,
+    borderRadius: BorderRadius.full,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.sm,
+    zIndex: 1,
+  },
+  weekStripWrap: {
+    marginBottom: Spacing.md,
+  },
+  weekStrip: {
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    borderRadius: 0,
+    paddingVertical: 2,
+    overflow: 'hidden',
+  },
+  weekListContent: {
+    paddingHorizontal: 0,
+  },
+  weekItem: {
+    width: DAY_PILL_WIDTH,
+    alignItems: 'center',
+    gap: 5,
+  },
+  weekDayLabel: {
+    fontSize: FontSize.sm,
+    fontWeight: '500',
+  },
+  weekDayLabelActive: {
+    fontWeight: '800',
+  },
+  weekRing: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 2,
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  weekRingToday: {
+    backgroundColor: 'rgba(34,197,94,0.10)',
+  },
+  weekDate: {
+    fontSize: FontSize.md,
+    fontWeight: '700',
+    letterSpacing: -0.1,
   },
   heroCard: {
     borderRadius: BorderRadius.xl,

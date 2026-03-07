@@ -6,6 +6,7 @@ from app.models.user import User
 from app.models.gamification import Achievement, UserAchievement, XPTransaction, NutritionStreak, DailyQuest
 from app.models.saved_recipe import SavedRecipe
 from app.models.nutrition import DailyNutritionSummary, NutritionTarget, FoodLog
+from app.models.metabolic import MetabolicBudget
 from app.schemas.gamification import (
     AchievementResponse, UserStatsResponse, LeaderboardEntry, XPGainResponse,
     DailyQuestResponse, NutritionStreakResponse, ScoreHistoryEntry,
@@ -276,6 +277,7 @@ def _generate_quests(db: Session, user: User, today: date) -> list[DailyQuest]:
         ("Healthify a Craving", "Transform one comfort food into a whole-food version.", "healthify", 1, 40),
         ("Save a Recipe", "Save a new recipe to your collection.", "save_recipe", 1, 25),
         ("Explore a Cuisine", "Browse recipes from a new cuisine.", "explore_cuisine", 1, 30),
+        ("Check 5 Grocery Items", "Mark 5 items off your grocery list.", "grocery_check", 5, 35),
     ]
 
     logging_pool = [
@@ -291,13 +293,28 @@ def _generate_quests(db: Session, user: User, today: date) -> list[DailyQuest]:
         ("Score Silver+", "Achieve a daily nutrition score of 75 or higher.", "score_silver", 75, 80),
     ]
 
+    # ── Metabolic quest pool ──
+    budget = db.query(MetabolicBudget).filter(MetabolicBudget.user_id == user.id).first()
+    mb_protein = int(budget.protein_target_g) if budget else 130
+    mb_fiber = int(budget.fiber_floor_g) if budget else 30
+    mb_sugar = int(budget.sugar_ceiling_g) if budget else 200
+
+    metabolic_pool = [
+        ("Reach Stable Energy", "Hit a daily MES of 60+ (Stable tier).", "metabolic_score", 60, 75),
+        (f"Hit {mb_protein}g Protein Target", f"Meet your metabolic protein target of {mb_protein}g.", "protein_target", mb_protein, 75),
+        (f"Stay Under {mb_sugar}g Sugar", f"Keep daily sugar below your {mb_sugar}g ceiling.", "sugar_ceiling", mb_sugar, 50),
+        (f"Meet {mb_fiber}g Fiber Floor", f"Reach your metabolic fiber floor of {mb_fiber}g.", "fiber_floor", mb_fiber, 50),
+        ("Budget Lockdown", "Hit all 3 metabolic guardrails today.", "budget_lockdown", 1, 100),
+    ]
+
     random.seed(f"{user.id}-{today.isoformat()}")  # deterministic per user per day
     gen = random.choice(general_pool)
     log = random.choice(logging_pool)
     qual = random.choice(quality_pool)
+    meta = random.choice(metabolic_pool)
 
     quests = []
-    for quest_type, (title, desc, meta_key, target, xp) in [("general", gen), ("logging", log), ("quality", qual)]:
+    for quest_type, (title, desc, meta_key, target, xp) in [("general", gen), ("logging", log), ("quality", qual), ("metabolic", meta)]:
         q = DailyQuest(
             id=str(uuid.uuid4()),
             user_id=user.id,

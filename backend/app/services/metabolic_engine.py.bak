@@ -1,0 +1,827 @@
+"""
+Metabolic Engine – core MES scoring, target derivation, and budget helpers.
+
+All scoring logic is isolated here, away from the router layer.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import date, timedelta
+from typing import Any, Optional
+
+from sqlalchemy.orm import Session
+
+from app.models.metabolic import MetabolicBudget, MetabolicScore, MetabolicStreak
+from app.models.metabolic_profile import MetabolicProfile
+from app.models.nutrition import FoodLog
+
+logger = logging.getLogger(__name__)
+
+MEALS_PER_DAY = 3
+
+# ──────────────────────────── Import gate ────────────────────────────
+MIN_IMPORT_MES = 75.0
+
+DEFAULT_BUDGET_DICT: dict[str, float] = {
+    "protein_target_g": 130.0,
+    "fiber_floor_g": 30.0,
+    "sugar_ceiling_g": 200.0,
+    "weight_protein": 0.50,
+    "weight_fiber": 0.25,
+    "weight_sugar": 0.25,
+}
+
+
+# ──────────────────────────── Tier helpers ───────────────────────────
+
+def score_to_tier(score: float) -> str:
+    """Map a 0-100 MES to a tier label."""
+    if score >= 80:
+        return "optimal"
+    if score >= 60:
+        return "stable"
+    if score >= 40:
+        return "shaky"
+    return "crash_risk"
+
+
+TIER_LABELS = {
+    "crash_risk": "Energy Drain",
+    "shaky": "Shaky Energy",
+    "stable": "Stable Energy",
+    "optimal": "Full Power",
+}
+
+TIER_COLORS = {
+    "crash_risk": "#FF4444",
+    "shaky": "#FF9500",
+    "stable": "#4A90D9",
+    "optimal": "#34C759",
+}
+
+
+# ──────────────────────────── Display calibration ────────────────────
+
+DISPLAY_OFFSET = 10  # points added for user-facing display
+
+
+def to_display_score(raw_score: float) -> float:
+    """Convert raw MES → psychologically-calibrated display score.
+
+    Keeps backend rigor while making 'good' meals feel rewarding:
+      raw 72 → display 82 ("Metabolically Strong")
+      raw 68 → display 78 (close, encouraging)
+      raw 85 → display 95 ("Elite Fuel")
+    """
+    return round(min(100.0, raw_score + DISPLAY_OFFSET), 1)
+
+
+def display_tier(display_score: float) -> str:
+    """Tier label derived from the display score."""
+    return score_to_tier(display_score)
+
+
+# ──────────────────────────── Meal context classification ────────────
+
+# Keywords used to classify food log entries
+_COMPONENT_PROTEIN_KW = {"chicken", "salmon", "tuna", "steak", "tofu", "eggs", "turkey", "beef", "shrimp", "tempeh", "skewers"}
+_COMPONENT_CARB_KW = {"rice", "quinoa", "potato", "sweet potato", "pasta", "bread", "oats", "couscous", "noodles"}
+_COMPONENT_VEG_KW = {"salad", "broccoli", "spinach", "kale", "asparagus", "green beans", "roasted vegetables"}
+_SAUCE_KW = {"sauce", "dressing", "salsa", "pesto", "marinade", "gravy", "condiment", "hummus", "guacamole"}
+_DESSERT_KW = {"dessert", "cake", "cookie", "brownie", "ice cream", "pudding", "pie", "chocolate", "pastry", "pastries", "muffin", "donut", "cupcake", "cheesecake", "tiramisu", "scone", "scones", "baklava", "beignet", "loaf", "fudge", "truffle"}
+_FULL_MEAL_HINT_KW = {
+    "ziti", "lasagna", "curry", "stir fry", "stir-fry", "bowl", "sandwich", "burger",
+    "taco", "burrito", "pizza", "casserole", "chili", "soup", "omelet", "omelette", "wrap",
+    "plate", "platter",
+}
+
+MEAL_CONTEXT_FULL = "full_meal"
+MEAL_CONTEXT_COMPONENT_PROTEIN = "meal_component_protein"
+MEAL_CONTEXT_COMPONENT_CARB = "meal_component_carb"
+MEAL_CONTEXT_COMPONENT_VEG = "meal_component_veg"
+MEAL_CONTEXT_SAUCE = "sauce_condiment"
+MEAL_CONTEXT_DESSERT = "dessert"
+
+
+def classify_meal_context(title: str | None, meal_type: str | None, nutrition: dict[str, Any] | None = None) -> str:
+    """Classify a food log entry's context for scoring purposes.
+
+    Returns one of: full_meal, meal_component_protein, meal_component_carb,
+    meal_component_veg, sauce_condiment, dessert
+    """
+    # Explicit dessert meal_type from Chronometer
+    if meal_type and meal_type.lower() == "dessert":
+        return MEAL_CONTEXT_DESSERT
+
+    lower_title = (title or "").lower().strip()
+    if not lower_title:
+        return MEAL_CONTEXT_FULL
+
+    # Check dessert first
+    for kw in _DESSERT_KW:
+        if kw in lower_title:
+            return MEAL_CONTEXT_DESSERT
+
+    # Check sauces/condiments
+    for kw in _SAUCE_KW:
+        if kw in lower_title:
+            return MEAL_CONTEXT_SAUCE
+
+    # Heuristic: low-calorie items with narrow macros are likely components
+    cals = float((nutrition or {}).get("calories", 0) or 0)
+    protein_g = float((nutrition or {}).get("protein", 0) or (nutrition or {}).get("protein_g", 0) or 0)
+    fiber_g = float((nutrition or {}).get("fiber", 0) or (nutrition or {}).get("fiber_g", 0) or 0)
+    word_count = len([w for w in lower_title.split() if w])
+
+    if any(kw in lower_title for kw in _FULL_MEAL_HINT_KW):
+        return MEAL_CONTEXT_FULL
+
+    has_protein_kw = any(kw in lower_title for kw in _COMPONENT_PROTEIN_KW)
+    has_carb_kw = any(kw in lower_title for kw in _COMPONENT_CARB_KW)
+    has_veg_kw = any(kw in lower_title for kw in _COMPONENT_VEG_KW)
+    component_hits = int(has_protein_kw) + int(has_carb_kw) + int(has_veg_kw)
+
+    # Mixed-category titles are usually complete dishes.
+    if component_hits >= 2:
+        return MEAL_CONTEXT_FULL
+
+    # Long titles with conjunctions are usually complete meals.
+    if word_count >= 5 and (" with " in lower_title or " and " in lower_title):
+        return MEAL_CONTEXT_FULL
+
+    # Component classification should be conservative.
+    likely_component = (
+        component_hits == 1
+        and (
+            word_count <= 3
+            or cals <= 300
+            or (protein_g <= 15 and fiber_g <= 6)
+        )
+    )
+
+    if not likely_component:
+        return MEAL_CONTEXT_FULL
+
+    if has_protein_kw:
+        return MEAL_CONTEXT_COMPONENT_PROTEIN
+    if has_carb_kw:
+        return MEAL_CONTEXT_COMPONENT_CARB
+    if has_veg_kw:
+        return MEAL_CONTEXT_COMPONENT_VEG
+
+    return MEAL_CONTEXT_FULL
+
+
+def should_score_meal(context: str) -> bool:
+    """Whether a meal context should receive a per-meal MES score."""
+    return context in (MEAL_CONTEXT_FULL,)
+
+
+def includes_in_daily_mes(context: str) -> bool:
+    """Whether a meal context contributes macros to daily MES calculation.
+
+    Desserts contribute to daily totals (sugar, calories tracked) but
+    sauces/condiments are excluded.
+    """
+    return context != MEAL_CONTEXT_SAUCE
+
+
+# ──────────────────────────── Scoring ────────────────────────────────
+
+def compute_meal_mes(
+    nutrition: dict[str, Any],
+    budget: MetabolicBudget | dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Score a single meal against a metabolic budget.
+
+    ``nutrition`` keys accepted: protein_g / protein, fiber_g / fiber, carbs_g / carbs.
+    For backward compatibility, sugar_g / sugar is used as fallback when carbs is missing.
+    ``budget`` may be a MetabolicBudget ORM object or a plain dict.
+    """
+    if budget is None:
+        budget = DEFAULT_BUDGET_DICT
+
+    # Normalise access – support both ORM and dict
+    def _g(key: str) -> float:
+        if isinstance(budget, dict):
+            return float(budget.get(key, 0))
+        return float(getattr(budget, key, 0))
+
+    protein_target_per_meal = max(1.0, _g("protein_target_g") / MEALS_PER_DAY)
+    fiber_floor_per_meal = max(1.0, _g("fiber_floor_g") / MEALS_PER_DAY)
+    sugar_ceiling_per_meal = max(1.0, _g("sugar_ceiling_g") / MEALS_PER_DAY)
+
+    protein_g = float(nutrition.get("protein_g", 0) or nutrition.get("protein", 0) or 0)
+    fiber_g = float(nutrition.get("fiber_g", 0) or nutrition.get("fiber", 0) or 0)
+    carbs_g = float(
+        nutrition.get("carbs_g", 0)
+        or nutrition.get("carbs", 0)
+        or nutrition.get("sugar_g", 0)
+        or nutrition.get("sugar", 0)
+        or 0
+    )
+
+    protein_score = min(protein_g / protein_target_per_meal, 1.0) * 100
+    fiber_score = min(fiber_g / fiber_floor_per_meal, 1.0) * 100
+
+    sugar_ratio = carbs_g / sugar_ceiling_per_meal if sugar_ceiling_per_meal else 0
+    sugar_score = max(0.0, 100.0 - max(0.0, (sugar_ratio - 1.0)) * 200.0)
+
+    w_protein = _g("weight_protein") or 0.50
+    w_fiber = _g("weight_fiber") or 0.25
+    w_sugar = _g("weight_sugar") or 0.25
+
+    total = w_protein * protein_score + w_fiber * fiber_score + w_sugar * sugar_score
+
+    raw = round(total, 1)
+    disp = to_display_score(raw)
+
+    return {
+        "protein_score": round(protein_score, 1),
+        "fiber_score": round(fiber_score, 1),
+        "sugar_score": round(sugar_score, 1),
+        "total_score": raw,
+        "display_score": disp,
+        "tier": score_to_tier(raw),
+        "display_tier": display_tier(disp),
+        "protein_g": round(protein_g, 1),
+        "fiber_g": round(fiber_g, 1),
+        "sugar_g": round(carbs_g, 1),  # compatibility: third guardrail grams
+        "carbs_g": round(carbs_g, 1),
+    }
+
+
+def compute_daily_mes(
+    daily_totals: dict[str, Any],
+    budget: MetabolicBudget | dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Score a full day's totals against the metabolic budget."""
+    if budget is None:
+        budget = DEFAULT_BUDGET_DICT
+
+    def _g(key: str) -> float:
+        if isinstance(budget, dict):
+            return float(budget.get(key, 0))
+        return float(getattr(budget, key, 0))
+
+    protein_target = max(1.0, _g("protein_target_g"))
+    fiber_floor = max(1.0, _g("fiber_floor_g"))
+    sugar_ceiling = max(1.0, _g("sugar_ceiling_g"))
+
+    protein_g = float(daily_totals.get("protein_g", 0) or daily_totals.get("protein", 0) or 0)
+    fiber_g = float(daily_totals.get("fiber_g", 0) or daily_totals.get("fiber", 0) or 0)
+    carbs_g = float(
+        daily_totals.get("carbs_g", 0)
+        or daily_totals.get("carbs", 0)
+        or daily_totals.get("sugar_g", 0)
+        or daily_totals.get("sugar", 0)
+        or 0
+    )
+    dessert_carbs_g = float(
+        daily_totals.get("dessert_carbs_g", 0)
+        or daily_totals.get("dessert_sugar_g", 0)
+        or 0
+    )
+    dessert_calories = float(daily_totals.get("dessert_calories", 0) or 0)
+
+    protein_score = min(protein_g / protein_target, 1.0) * 100
+    fiber_score = min(fiber_g / fiber_floor, 1.0) * 100
+
+    sugar_ratio = carbs_g / sugar_ceiling if sugar_ceiling else 0
+    sugar_score = max(0.0, 100.0 - max(0.0, (sugar_ratio - 1.0)) * 200.0)
+
+    w_protein = _g("weight_protein") or 0.50
+    w_fiber = _g("weight_fiber") or 0.25
+    w_sugar = _g("weight_sugar") or 0.25
+
+    total = w_protein * protein_score + w_fiber * fiber_score + w_sugar * sugar_score
+    treat_impact = _compute_treat_impact(
+        protein_g=protein_g,
+        fiber_g=fiber_g,
+        carbs_g=carbs_g,
+        dessert_carbs_g=dessert_carbs_g,
+        dessert_calories=dessert_calories,
+        protein_target=protein_target,
+        fiber_floor=fiber_floor,
+        sugar_ceiling=sugar_ceiling,
+    )
+    adjusted_total = max(0.0, total - float(treat_impact["mes_penalty_points"]))
+    raw = round(adjusted_total, 1)
+    disp = to_display_score(raw)
+
+    return {
+        "protein_score": round(protein_score, 1),
+        "fiber_score": round(fiber_score, 1),
+        "sugar_score": round(sugar_score, 1),
+        "total_score": raw,
+        "display_score": disp,
+        "tier": score_to_tier(raw),
+        "display_tier": display_tier(disp),
+        "protein_g": round(protein_g, 1),
+        "fiber_g": round(fiber_g, 1),
+        "sugar_g": round(carbs_g, 1),  # compatibility: third guardrail grams
+        "carbs_g": round(carbs_g, 1),
+        "treat_impact": treat_impact,
+    }
+
+
+def _compute_treat_impact(
+    *,
+    protein_g: float,
+    fiber_g: float,
+    carbs_g: float,
+    dessert_carbs_g: float,
+    dessert_calories: float,
+    protein_target: float,
+    fiber_floor: float,
+    sugar_ceiling: float,
+) -> dict[str, Any]:
+    """Compute context-aware dessert/treat MES impact for a day.
+
+    Treats are unscored at meal-level, but can gently adjust daily MES.
+    Better protein/fiber coverage and carb headroom protect against impact.
+    """
+    has_treat = dessert_carbs_g > 0 or dessert_calories > 0
+    if not has_treat:
+        return {
+            "has_treats": False,
+            "dessert_carbs_g": 0.0,
+            "dessert_calories": 0.0,
+            "protection_score": 0.0,
+            "protection_buffer_g": 0.0,
+            "treat_load_g": 0.0,
+            "net_treat_load_g": 0.0,
+            "mes_penalty_points": 0.0,
+            "impact_level": "none",
+        }
+
+    protein_coverage = min(max(protein_g / max(1.0, protein_target), 0.0), 1.0)
+    fiber_coverage = min(max(fiber_g / max(1.0, fiber_floor), 0.0), 1.0)
+    carb_headroom_g = max(0.0, sugar_ceiling - carbs_g)
+    carb_headroom_coverage = min(carb_headroom_g / max(1.0, sugar_ceiling), 1.0)
+
+    protection_score = (
+        (protein_coverage * 0.45)
+        + (fiber_coverage * 0.35)
+        + (carb_headroom_coverage * 0.20)
+    )
+    protection_buffer_g = 8.0 + (28.0 * protection_score)
+
+    calorie_over_baseline = max(0.0, dessert_calories - 120.0)
+    treat_load_g = max(0.0, dessert_carbs_g) + (calorie_over_baseline * 0.05)
+    net_treat_load_g = max(0.0, treat_load_g - protection_buffer_g)
+
+    # Gentle cap: treats should not dominate daily MES on their own.
+    mes_penalty_points = min(12.0, net_treat_load_g * 0.35)
+    if mes_penalty_points <= 0.2:
+        impact_level = "protected"
+    elif mes_penalty_points <= 2.0:
+        impact_level = "light"
+    else:
+        impact_level = "impactful"
+
+    return {
+        "has_treats": True,
+        "dessert_carbs_g": round(max(0.0, dessert_carbs_g), 1),
+        "dessert_calories": round(max(0.0, dessert_calories), 1),
+        "protection_score": round(protection_score, 3),
+        "protection_buffer_g": round(protection_buffer_g, 1),
+        "treat_load_g": round(treat_load_g, 1),
+        "net_treat_load_g": round(net_treat_load_g, 1),
+        "mes_penalty_points": round(mes_penalty_points, 1),
+        "impact_level": impact_level,
+    }
+
+
+# ──────────────────────────── Remaining budget ───────────────────────
+
+def remaining_budget(
+    daily_totals: dict[str, Any],
+    budget: MetabolicBudget | dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """What's left to eat today to stay optimal."""
+    if budget is None:
+        budget = DEFAULT_BUDGET_DICT
+
+    def _g(key: str) -> float:
+        if isinstance(budget, dict):
+            return float(budget.get(key, 0))
+        return float(getattr(budget, key, 0))
+
+    protein_g = float(daily_totals.get("protein_g", 0) or daily_totals.get("protein", 0) or 0)
+    fiber_g = float(daily_totals.get("fiber_g", 0) or daily_totals.get("fiber", 0) or 0)
+    carbs_g = float(
+        daily_totals.get("carbs_g", 0)
+        or daily_totals.get("carbs", 0)
+        or daily_totals.get("sugar_g", 0)
+        or daily_totals.get("sugar", 0)
+        or 0
+    )
+
+    protein_remaining = max(0.0, _g("protein_target_g") - protein_g)
+    fiber_remaining = max(0.0, _g("fiber_floor_g") - fiber_g)
+    sugar_headroom = max(0.0, _g("sugar_ceiling_g") - carbs_g)
+
+    return {
+        "protein_remaining_g": round(protein_remaining, 1),
+        "fiber_remaining_g": round(fiber_remaining, 1),
+        "sugar_headroom_g": round(sugar_headroom, 1),  # compatibility
+        "carb_headroom_g": round(sugar_headroom, 1),
+    }
+
+
+# ──────────────────────────── Onboarding derivation ──────────────────
+
+def derive_target_weight_lb(profile: dict[str, Any]) -> float:
+    """
+    Derive target bodyweight from onboarding data.
+    Uses height + sex + body-fat % + goal.
+    If user explicitly sets target bodyweight, use that value directly.
+    Example: current 180 lb, target 160 lb -> protein target uses 160 lb.
+
+    Estimation heuristic (when no explicit target):
+    - Start from current weight
+    - Goal 'lose': subtract 10% (capped)
+    - Goal 'gain': add 5%
+    - Goal 'maintain': keep current weight
+    Fallback: 162.5 lb (produces ~130 g protein at 0.8 g/lb)
+    """
+    explicit = profile.get("target_weight_lb")
+    if explicit:
+        return float(explicit)
+
+    current_weight = profile.get("weight_lb")
+    if not current_weight:
+        return 162.5  # fallback → 130 g protein
+
+    current_weight = float(current_weight)
+    goal = (profile.get("goal") or "maintain").lower()
+
+    if goal in ("lose", "fat-loss", "cut"):
+        return round(current_weight * 0.90, 1)
+    elif goal in ("gain", "bulk"):
+        return round(current_weight * 1.05, 1)
+    else:
+        return round(current_weight, 1)
+
+
+def derive_protein_target_g(profile: dict[str, Any]) -> float:
+    """Protein target = 0.8 g per lb of target bodyweight (or explicit user target)."""
+    target_weight = derive_target_weight_lb(profile)
+    return round(0.8 * target_weight)
+
+
+def derive_sugar_ceiling(profile: dict[str, Any]) -> float:
+    """App-wide default carb/sugar guardrail used by MES."""
+    return 200.0
+
+
+# ──────────────────────────── DB helpers ─────────────────────────────
+
+def get_or_create_budget(db: Session, user_id: str) -> MetabolicBudget:
+    """Return existing budget or auto-create with defaults."""
+    budget = db.query(MetabolicBudget).filter(MetabolicBudget.user_id == user_id).first()
+    if budget:
+        return budget
+
+    budget = MetabolicBudget(user_id=user_id)
+
+    # Try to personalise from profile
+    profile = db.query(MetabolicProfile).filter(MetabolicProfile.user_id == user_id).first()
+    if profile:
+        p_dict = {
+            "sex": profile.sex,
+            "weight_lb": profile.weight_lb,
+            "goal": profile.goal,
+            "target_weight_lb": profile.target_weight_lb,
+        }
+        budget.protein_target_g = derive_protein_target_g(p_dict)
+        budget.sugar_ceiling_g = derive_sugar_ceiling(p_dict)
+
+    db.add(budget)
+    db.commit()
+    db.refresh(budget)
+    return budget
+
+
+def get_or_create_streak(db: Session, user_id: str) -> MetabolicStreak:
+    """Return existing streak or auto-create."""
+    streak = db.query(MetabolicStreak).filter(MetabolicStreak.user_id == user_id).first()
+    if streak:
+        return streak
+    streak = MetabolicStreak(user_id=user_id)
+    db.add(streak)
+    db.commit()
+    db.refresh(streak)
+    return streak
+
+
+def aggregate_daily_totals(db: Session, user_id: str, day: date) -> dict[str, float]:
+    """Sum all food logs for a user on a given date.
+
+    Sauces/condiments are excluded from MES daily totals.
+    Desserts ARE included (they contribute sugar/calories to the daily picture).
+    """
+    logs = db.query(FoodLog).filter(FoodLog.user_id == user_id, FoodLog.date == day).all()
+    totals: dict[str, float] = {"protein_g": 0, "fiber_g": 0, "sugar_g": 0, "carbs_g": 0, "calories": 0}
+    dessert_sugar_g: float = 0.0
+    dessert_calories: float = 0.0
+    for log in logs:
+        snap = log.nutrition_snapshot or {}
+        ctx = classify_meal_context(log.title, log.meal_type, snap)
+
+        # Sauces excluded from daily totals entirely
+        if not includes_in_daily_mes(ctx):
+            continue
+
+        p = float(snap.get("protein", 0) or snap.get("protein_g", 0) or 0)
+        f = float(snap.get("fiber", 0) or snap.get("fiber_g", 0) or 0)
+        carb = float(snap.get("carbs", 0) or snap.get("carbs_g", 0) or snap.get("sugar", 0) or snap.get("sugar_g", 0) or 0)
+        s = float(snap.get("sugar", 0) or snap.get("sugar_g", 0) or 0)
+        c = float(snap.get("calories", 0) or 0)
+
+        totals["protein_g"] += p
+        totals["fiber_g"] += f
+        totals["sugar_g"] += carb  # compatibility: third guardrail aggregate
+        totals["carbs_g"] += carb
+        totals["calories"] += c
+
+        if ctx == MEAL_CONTEXT_DESSERT:
+            dessert_sugar_g += carb
+            dessert_calories += c
+
+    totals["dessert_sugar_g"] = dessert_sugar_g
+    totals["dessert_carbs_g"] = dessert_sugar_g
+    totals["dessert_calories"] = dessert_calories
+    return totals
+
+
+# ──────────────────────────── Score persistence ──────────────────────
+
+def upsert_meal_score(
+    db: Session,
+    user_id: str,
+    food_log: FoodLog,
+    budget: MetabolicBudget,
+) -> MetabolicScore | None:
+    """Compute and persist a per-meal MES score for a food log.
+
+    Returns None for entries that shouldn't receive a per-meal score
+    (desserts, sauces, components). For components, a hint is stored
+    in details_json instead.
+    """
+    nutrition = food_log.nutrition_snapshot or {}
+    ctx = classify_meal_context(food_log.title, food_log.meal_type, nutrition)
+
+    score = (
+        db.query(MetabolicScore)
+        .filter(
+            MetabolicScore.user_id == user_id,
+            MetabolicScore.date == food_log.date,
+            MetabolicScore.scope == "meal",
+            MetabolicScore.food_log_id == food_log.id,
+        )
+        .first()
+    )
+
+    # For non-full-meal items, store metadata only (no score card)
+    if not should_score_meal(ctx):
+        if not score:
+            score = MetabolicScore(
+                user_id=user_id,
+                date=food_log.date,
+                scope="meal",
+                food_log_id=food_log.id,
+            )
+            db.add(score)
+        score.total_score = 0
+        score.display_score = 0
+        score.protein_score = 0
+        score.fiber_score = 0
+        score.sugar_score = 0
+        score.tier = "unscored"
+        score.display_tier = "unscored"
+        score.meal_context = ctx
+        score.protein_g = float(nutrition.get("protein_g", 0) or nutrition.get("protein", 0) or 0)
+        score.fiber_g = float(nutrition.get("fiber_g", 0) or nutrition.get("fiber", 0) or 0)
+        score.sugar_g = float(
+            nutrition.get("carbs_g", 0)
+            or nutrition.get("carbs", 0)
+            or nutrition.get("sugar_g", 0)
+            or nutrition.get("sugar", 0)
+            or 0
+        )
+        score.details_json = {"meal_context": ctx, "unscored_reason": _unscored_hint(ctx)}
+        db.commit()
+        db.refresh(score)
+        return None  # signal: don't show MES card
+
+    result = compute_meal_mes(nutrition, budget)
+
+    if not score:
+        score = MetabolicScore(
+            user_id=user_id,
+            date=food_log.date,
+            scope="meal",
+            food_log_id=food_log.id,
+        )
+        db.add(score)
+
+    score.protein_score = result["protein_score"]
+    score.fiber_score = result["fiber_score"]
+    score.sugar_score = result["sugar_score"]
+    score.total_score = result["total_score"]
+    score.display_score = result["display_score"]
+    score.tier = result["tier"]
+    score.display_tier = result["display_tier"]
+    score.protein_g = result["protein_g"]
+    score.fiber_g = result["fiber_g"]
+    score.sugar_g = result["sugar_g"]
+    score.meal_context = ctx
+    score.details_json = {"meal_context": ctx}
+
+    db.commit()
+    db.refresh(score)
+    return score
+
+
+def _unscored_hint(ctx: str) -> str:
+    """User-facing hint for why a meal isn't scored."""
+    return {
+        MEAL_CONTEXT_COMPONENT_PROTEIN: "Prep component — add sides to see full MES.",
+        MEAL_CONTEXT_COMPONENT_CARB: "Prep component — add protein and veggies to see full MES.",
+        MEAL_CONTEXT_COMPONENT_VEG: "Prep component — add protein to see full MES.",
+        MEAL_CONTEXT_SAUCE: "Sauces & condiments aren't scored individually.",
+        MEAL_CONTEXT_DESSERT: "Treats are tracked for sugar/calories but not scored as meals.",
+    }.get(ctx, "")
+
+
+def recompute_daily_score(
+    db: Session,
+    user_id: str,
+    day: date,
+    budget: MetabolicBudget | None = None,
+) -> MetabolicScore:
+    """(Re)compute and persist the daily MES for a given date."""
+    if budget is None:
+        budget = get_or_create_budget(db, user_id)
+
+    totals = aggregate_daily_totals(db, user_id, day)
+    result = compute_daily_mes(totals, budget)
+
+    score = (
+        db.query(MetabolicScore)
+        .filter(
+            MetabolicScore.user_id == user_id,
+            MetabolicScore.date == day,
+            MetabolicScore.scope == "daily",
+        )
+        .first()
+    )
+    if not score:
+        score = MetabolicScore(
+            user_id=user_id,
+            date=day,
+            scope="daily",
+            food_log_id=None,
+        )
+        db.add(score)
+
+    score.protein_score = result["protein_score"]
+    score.fiber_score = result["fiber_score"]
+    score.sugar_score = result["sugar_score"]
+    score.total_score = result["total_score"]
+    score.display_score = result["display_score"]
+    score.tier = result["tier"]
+    score.display_tier = result["display_tier"]
+    score.protein_g = result["protein_g"]
+    score.fiber_g = result["fiber_g"]
+    score.sugar_g = result["sugar_g"]
+    score.meal_context = "daily"
+
+    # Track dessert/treat impact metadata for UI + coaching copy
+    dessert_sugar = totals.get("dessert_sugar_g", 0)
+    budget_obj = budget
+    sugar_ceiling = float(
+        getattr(budget_obj, "sugar_ceiling_g", 200.0)
+        if not isinstance(budget_obj, dict)
+        else budget_obj.get("sugar_ceiling_g", 200.0)
+    )
+    overage = max(0, totals.get("sugar_g", 0) - sugar_ceiling)
+    score.details_json = {
+        "dessert_sugar_g": round(dessert_sugar, 1),
+        "sugar_overage_g": round(overage, 1) if overage > 0 else 0,
+        "treat_impact": result.get("treat_impact") or {},
+    }
+
+    db.commit()
+    db.refresh(score)
+    return score
+
+
+def update_metabolic_streak(
+    db: Session,
+    user_id: str,
+    daily_mes: float,
+    day: date,
+) -> MetabolicStreak:
+    """Update the metabolic streak after a daily MES recomputation."""
+    streak = get_or_create_streak(db, user_id)
+    yesterday = day - timedelta(days=1)
+
+    if daily_mes >= streak.threshold:
+        if streak.last_qualifying_date == yesterday or streak.current_streak == 0:
+            streak.current_streak += 1
+        elif streak.last_qualifying_date != day:
+            streak.current_streak = 1
+        streak.last_qualifying_date = day
+        if streak.current_streak > streak.longest_streak:
+            streak.longest_streak = streak.current_streak
+    else:
+        if streak.last_qualifying_date != day:
+            streak.current_streak = 0
+
+    db.commit()
+    db.refresh(streak)
+    return streak
+
+
+def on_food_log_created(db: Session, user_id: str, food_log: FoodLog) -> dict[str, Any]:
+    """
+    Hook called after a food log is created/updated.
+    Computes meal MES, recomputes daily MES, updates metabolic streak,
+    and awards metabolic tier XP (once per day).
+    Returns the daily MES result for the caller.
+    """
+    from app.achievements_engine import award_xp
+    from app.models.user import User
+    from app.models.gamification import XPTransaction
+    from datetime import datetime
+
+    budget = get_or_create_budget(db, user_id)
+
+    # 1. Score this meal (returns None for components/desserts/sauces)
+    meal_context = classify_meal_context(food_log.title, food_log.meal_type, food_log.nutrition_snapshot)
+    upsert_meal_score(db, user_id, food_log, budget)
+
+    # 2. Recompute daily MES
+    daily = recompute_daily_score(db, user_id, food_log.date, budget)
+
+    # 3. Update streak (raw score — preserves backend rigor)
+    update_metabolic_streak(db, user_id, daily.total_score, food_log.date)
+
+    # 4. Award metabolic tier XP (once per day)
+    tier_xp = 0
+    tier_label = None
+    TIER_XP_MAP = {"crash_risk": 0, "shaky": 25, "stable": 75, "optimal": 150}
+    tier_xp = TIER_XP_MAP.get(daily.tier, 0)
+    if tier_xp > 0:
+        today_start = datetime.combine(food_log.date, datetime.min.time())
+        existing = db.query(XPTransaction).filter(
+            XPTransaction.user_id == user_id,
+            XPTransaction.reason.like("metabolic_tier:%"),
+            XPTransaction.created_at >= today_start,
+        ).first()
+        if not existing:
+            user = db.query(User).filter(User.id == user_id).first()
+            if user:
+                tier_label = daily.tier
+                award_xp(db, user, tier_xp, f"metabolic_tier:{tier_label}")
+
+    # Build dessert sugar feedback if applicable
+    dessert_feedback = None
+    details = daily.details_json or {}
+    dessert_sugar = details.get("dessert_sugar_g", 0)
+    sugar_overage = details.get("sugar_overage_g", 0)
+    treat_impact = details.get("treat_impact") or {}
+    treat_penalty = float(treat_impact.get("mes_penalty_points", 0) or 0)
+    impact_level = str(treat_impact.get("impact_level", "none"))
+    if dessert_sugar > 0 and sugar_overage > 0:
+        dessert_feedback = (
+            f"You're {int(sugar_overage)}g over sugar headroom — "
+            "add a high-protein/fiber dinner to stabilize."
+        )
+    elif treat_penalty > 0 and impact_level == "impactful":
+        dessert_feedback = "Treat impact is noticeable today — add protein/fiber to improve protection."
+    elif treat_penalty <= 0.2 and dessert_sugar > 0:
+        dessert_feedback = "Treat impact stayed low thanks to your protein/fiber coverage."
+
+    return {
+        "daily_mes": daily.total_score,
+        "daily_display_mes": daily.display_score or to_display_score(daily.total_score),
+        "daily_tier": daily.tier,
+        "daily_display_tier": daily.display_tier or display_tier(to_display_score(daily.total_score)),
+        "meal_context": meal_context,
+        "metabolic_tier_xp": tier_xp if tier_label else 0,
+        "metabolic_tier_label": tier_label,
+        "dessert_feedback": dessert_feedback,
+    }
+
+
+# ──────────────────────────── Import gate ────────────────────────────
+
+def passes_import_gate(nutrition_info: dict[str, Any]) -> tuple[bool, float]:
+    """Check if a recipe's nutrition passes the MES import gate."""
+    result = compute_meal_mes(nutrition_info, DEFAULT_BUDGET_DICT)
+    total = float(result["total_score"])
+    return total >= MIN_IMPORT_MES, total

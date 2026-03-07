@@ -6,6 +6,7 @@ import { Card } from '../GradientCard';
 import { useTheme } from '../../hooks/useTheme';
 import { useSavedRecipesStore } from '../../stores/savedRecipesStore';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
+import { cleanRecipeDescription } from '../../utils/recipeDescription';
 
 export function SavedView() {
   const theme = useTheme();
@@ -33,9 +34,9 @@ export function SavedView() {
           <Card key={recipe.id} style={styles.recipeCard} padding={Spacing.md}>
             <TouchableOpacity onPress={() => router.push(`/browse/${recipe.id}`)} activeOpacity={0.75}>
               <Text style={[styles.title, { color: theme.text }]}>{recipe.title}</Text>
-              {!!recipe.description && (
+              {!!cleanRecipeDescription(recipe.description) && (
                 <Text style={[styles.desc, { color: theme.textSecondary }]} numberOfLines={2}>
-                  {recipe.description}
+                  {cleanRecipeDescription(recipe.description)}
                 </Text>
               )}
               <View style={styles.metaRow}>

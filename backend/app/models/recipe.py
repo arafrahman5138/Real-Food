@@ -4,6 +4,10 @@ from sqlalchemy import Column, String, Integer, DateTime, Boolean, JSON, Text
 from app.db import Base, GUID
 
 
+# Valid recipe_role enum values
+RECIPE_ROLES = ("full_meal", "protein_base", "carb_base", "veg_side", "sauce", "dessert")
+
+
 class Recipe(Base):
     __tablename__ = "recipes"
 
@@ -28,3 +32,12 @@ class Recipe(Base):
     is_ai_generated = Column(Boolean, default=True)
     image_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # ── Meal-composition fields (Phase 1) ──────────────────────────────
+    recipe_role = Column(String, default="full_meal", index=True)
+    is_component = Column(Boolean, default=False)
+    meal_group_id = Column(String, nullable=True, index=True)
+    default_pairing_ids = Column(JSON, default=list)       # recommended companion recipe ids
+    needs_default_pairing = Column(Boolean, nullable=True, default=None)
+    component_composition = Column(JSON, nullable=True)     # for composed meals: expected roles/ids
+    is_mes_scoreable = Column(Boolean, default=True)

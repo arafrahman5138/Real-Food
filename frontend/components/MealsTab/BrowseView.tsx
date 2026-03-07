@@ -17,6 +17,22 @@ import { useTheme } from '../../hooks/useTheme';
 import { recipeApi } from '../../services/api';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
 import { COOK_TIME_OPTIONS, HEALTH_BENEFIT_OPTIONS, PROTEIN_OPTIONS, CARB_OPTIONS } from '../../constants/Config';
+import { MealMESBadge } from '../MealMESBadge';
+import { PlateComposer } from '../PlateComposer';
+import { useMetabolicBudgetStore } from '../../stores/metabolicBudgetStore';
+import { usePlateStore } from '../../stores/plateStore';
+import {
+  classifyMealContext,
+  isScoreable,
+  contextLabel,
+  type MealContext,
+  MEAL_CONTEXT_FULL,
+  MEAL_CONTEXT_COMPONENT_PROTEIN,
+  MEAL_CONTEXT_COMPONENT_CARB,
+  MEAL_CONTEXT_COMPONENT_VEG,
+  MEAL_CONTEXT_SAUCE,
+  MEAL_CONTEXT_DESSERT,
+} from '../../utils/mealContext';
 
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = (width - Spacing.xl * 2 - Spacing.md) / 2;
@@ -34,6 +50,15 @@ interface RecipeCard {
   health_benefits: string[];
   nutrition_info: Record<string, number>;
   servings: number;
+  // Composition fields
+  recipe_role?: string;
+  is_component?: boolean;
+  meal_group_id?: string | null;
+  default_pairing_ids?: string[];
+  needs_default_pairing?: boolean | null;
+  is_mes_scoreable?: boolean;
+  composite_display_score?: number;
+  composite_display_tier?: string;
 }
 
 interface BrowseResult {
@@ -57,14 +82,37 @@ interface Filters {
 
 const MULTI_SELECT_FILTERS: (keyof Filters)[] = ['protein_type', 'carb_type'];
 
-const CATEGORY_OPTIONS = [
-  { key: null, label: 'All', icon: 'grid-outline' as const },
-  { key: 'quick', label: 'Quick', icon: 'flash-outline' as const },
-  { key: 'meal-prep', label: 'Meal Prep', icon: 'layers-outline' as const },
-  { key: 'sit-down', label: 'Sit-Down', icon: 'restaurant-outline' as const },
-] as const;
+type TopCategory = 'meals' | 'desserts';
+type MealsSubTab = 'full' | 'components';
+type DessertFilterKey = 'cookies' | 'cake' | 'pie' | 'bars' | 'pastries' | 'frozen';
 
-export function BrowseView() {
+const TOP_CATEGORIES: { key: TopCategory; label: string; icon: React.ComponentProps<typeof Ionicons>['name'] }[] = [
+  { key: 'meals', label: 'Meals', icon: 'restaurant-outline' },
+  { key: 'desserts', label: 'Desserts', icon: 'ice-cream-outline' },
+];
+
+const MEALS_SUB_TABS: { key: MealsSubTab; label: string; icon: React.ComponentProps<typeof Ionicons>['name'] }[] = [
+  { key: 'full', label: 'Full Meals', icon: 'flame-outline' },
+  { key: 'components', label: 'Meal Prep', icon: 'layers-outline' },
+];
+
+const DESSERT_FILTERS: { key: DessertFilterKey; label: string; terms: string[] }[] = [
+  { key: 'cookies', label: 'Cookies', terms: ['cookie', 'cookies'] },
+  { key: 'cake', label: 'Cake', terms: ['cake', 'loaf'] },
+  { key: 'pie', label: 'Pie', terms: ['pie', 'pies', 'tart'] },
+  { key: 'bars', label: 'Bars', terms: ['bar', 'bars', 'brownie', 'blondie'] },
+  { key: 'pastries', label: 'Pastries', terms: ['scone', 'scones', 'beignet', 'beignets', 'baklava', 'pastry', 'pastries', 'muffin', 'muffins'] },
+  { key: 'frozen', label: 'Frozen', terms: ['ice cream', 'sorbet', 'popsicle', 'gelato'] },
+];
+
+interface BrowseViewProps {
+  /** Pre-select top category (hides the Meals/Desserts toggle). */
+  initialCategory?: TopCategory;
+  /** Pre-select sub-tab (only relevant when category is 'meals'). */
+  initialSubTab?: MealsSubTab;
+}
+
+export function BrowseView({ initialCategory, initialSubTab }: BrowseViewProps) {
   const theme = useTheme();
   const [query, setQuery] = useState('');
   const [filters, setFilters] = useState<Filters>({});
@@ -75,8 +123,26 @@ export function BrowseView() {
   const [page, setPage] = useState(1);
   const [filterModal, setFilterModal] = useState<string | null>(null);
   const [filterOptions, setFilterOptions] = useState<any>(null);
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<TopCategory>(initialCategory ?? 'meals');
+  const [mealsSubTab, setMealsSubTab] = useState<MealsSubTab>(initialSubTab ?? 'full');
+  const [dessertFilter, setDessertFilter] = useState<DessertFilterKey | null>(null);
+  const [selectedRoleFilter, setSelectedRoleFilter] = useState<string | null>(null);
+  const [fitsBudget, setFitsBudget] = useState(false);
+  const [plateOpen, setPlateOpen] = useState(false);
+  const plateItems = usePlateStore((s) => s.items);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** When launched from the menu, hide the top category toggle. */
+  const hideTopCategoryToggle = !!initialCategory;
+
+  // MES budget from store (for client-side badge computation)
+  const mesBudget = useMetabolicBudgetStore((s) => s.budget);
+  const fetchBudget = useMetabolicBudgetStore((s) => s.fetchBudget);
+  const isFullMealsMode = selectedCategory === 'meals' && mealsSubTab === 'full';
+
+  useEffect(() => {
+    if (!mesBudget) fetchBudget();
+  }, []);
 
   const fetchRecipes = useCallback(
     async (p: number = 1, append: boolean = false) => {
@@ -85,15 +151,27 @@ export function BrowseView() {
       try {
         const params: Record<string, string | number> = { page: p, page_size: 20 };
         if (query) params.q = query;
-        if (selectedCategory) params.category = selectedCategory;
-        if (filters.protein_type) params.protein_type = filters.protein_type;
-        if (filters.carb_type) params.carb_type = filters.carb_type;
-        if (filters.meal_type) params.meal_type = filters.meal_type;
-        if (filters.flavor) params.flavor = filters.flavor;
-        if (filters.dietary) params.dietary = filters.dietary;
-        if (filters.cook_time) params.cook_time = filters.cook_time;
-        if (filters.difficulty) params.difficulty = filters.difficulty;
-        if (filters.health_benefit) params.health_benefit = filters.health_benefit;
+        // Map top categories to backend composition filters
+        if (selectedCategory === 'meals') {
+          if (mealsSubTab === 'full') {
+            params.view_mode = 'sit_down';
+          } else {
+            params.view_mode = 'meal_prep';
+            if (selectedRoleFilter) params.recipe_role = selectedRoleFilter;
+          }
+        } else if (selectedCategory === 'desserts') {
+          params.recipe_role = 'dessert';
+        }
+        if (isFullMealsMode) {
+          if (filters.protein_type) params.protein_type = filters.protein_type;
+          if (filters.carb_type) params.carb_type = filters.carb_type;
+          if (filters.meal_type) params.meal_type = filters.meal_type;
+          if (filters.flavor) params.flavor = filters.flavor;
+          if (filters.dietary) params.dietary = filters.dietary;
+          if (filters.cook_time) params.cook_time = filters.cook_time;
+          if (filters.difficulty) params.difficulty = filters.difficulty;
+          if (filters.health_benefit) params.health_benefit = filters.health_benefit;
+        }
 
         const data: BrowseResult = await recipeApi.browse(params);
         if (append) {
@@ -110,7 +188,7 @@ export function BrowseView() {
         setLoading(false);
       }
     },
-    [query, filters, selectedCategory],
+    [query, filters, selectedCategory, mealsSubTab, selectedRoleFilter, isFullMealsMode],
   );
 
   useEffect(() => {
@@ -125,7 +203,7 @@ export function BrowseView() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query, filters, selectedCategory]);
+  }, [query, filters, selectedCategory, mealsSubTab, selectedRoleFilter]);
 
   const loadMore = () => {
     if (!loading && results && page < results.total_pages) {
@@ -156,16 +234,112 @@ export function BrowseView() {
 
   const clearFilters = () => {
     setFilters({});
-    setSelectedCategory(null);
+    setSelectedCategory('meals');
+    setMealsSubTab('full');
+    setDessertFilter(null);
+    setSelectedRoleFilter(null);
     setQuery('');
+    setFitsBudget(false);
   };
 
-  const activeFilterCount = Object.values(filters).filter(Boolean).length + (selectedCategory ? 1 : 0);
+  const activeFilterCount = Object.values(filters).filter(Boolean).length + (selectedRoleFilter ? 1 : 0) + (fitsBudget ? 1 : 0) + (dessertFilter ? 1 : 0);
 
   const getBenefitInfo = (id: string) =>
     HEALTH_BENEFIT_OPTIONS.find((h) => h.id === id);
 
-  const renderRecipeCard = ({ item }: { item: RecipeCard }) => (
+  const getRecipeContext = (item: RecipeCard): MealContext => {
+    // Prefer backend canonical taxonomy when available.
+    if (item.recipe_role) {
+      if (item.recipe_role === 'full_meal') return MEAL_CONTEXT_FULL;
+      if (item.recipe_role === 'protein_base') return MEAL_CONTEXT_COMPONENT_PROTEIN;
+      if (item.recipe_role === 'carb_base') return MEAL_CONTEXT_COMPONENT_CARB;
+      if (item.recipe_role === 'veg_side') return MEAL_CONTEXT_COMPONENT_VEG;
+      if (item.recipe_role === 'sauce') return MEAL_CONTEXT_SAUCE;
+      if (item.recipe_role === 'dessert') return MEAL_CONTEXT_DESSERT;
+    }
+
+    // Safety fallback for older payloads.
+    return classifyMealContext(item.title, null, item.nutrition_info);
+  };
+
+  const displayedItems = (() => {
+    const base = results?.items || [];
+
+    const modeFiltered = base.filter((item) => {
+      const ctx = getRecipeContext(item);
+      if (selectedCategory === 'desserts') return ctx === MEAL_CONTEXT_DESSERT;
+      if (mealsSubTab === 'full') return isScoreable(ctx);
+      if (mealsSubTab === 'components') {
+        return [
+          MEAL_CONTEXT_COMPONENT_PROTEIN,
+          MEAL_CONTEXT_COMPONENT_CARB,
+          MEAL_CONTEXT_COMPONENT_VEG,
+          MEAL_CONTEXT_SAUCE,
+        ].includes(ctx);
+      }
+      return true;
+    });
+
+    if (selectedCategory === 'desserts' && dessertFilter) {
+      const activeDessertFilter = DESSERT_FILTERS.find((filter) => filter.key === dessertFilter);
+      if (activeDessertFilter) {
+        return modeFiltered.filter((item) => {
+          const title = item.title.toLowerCase();
+          return activeDessertFilter.terms.some((term) => title.includes(term));
+        });
+      }
+    }
+
+    if (isFullMealsMode && fitsBudget) {
+      return modeFiltered.filter((item) => {
+        const baseDisplayScore = Number(item.nutrition_info?.mes_display_score ?? item.nutrition_info?.mes_score ?? 0);
+        const compositeDisplayScore =
+          item.needs_default_pairing === true && typeof item.composite_display_score === 'number'
+            ? Number(item.composite_display_score)
+            : null;
+        const displayScore = compositeDisplayScore ?? baseDisplayScore;
+        return displayScore >= 60;
+      });
+    }
+
+    return modeFiltered;
+  })();
+
+  const renderRecipeCard = ({ item }: { item: RecipeCard }) => {
+    const ctx: MealContext = getRecipeContext(item);
+    const baseDisplayScore = Number(item.nutrition_info?.mes_display_score ?? item.nutrition_info?.mes_score ?? 0);
+    const baseDisplayTier = typeof item.nutrition_info?.mes_display_tier === 'string'
+      ? item.nutrition_info.mes_display_tier
+      : 'critical';
+    const shouldUseCompositeScore =
+      item.needs_default_pairing === true && typeof item.composite_display_score === 'number';
+    const displayScore = shouldUseCompositeScore ? item.composite_display_score! : (baseDisplayScore > 0 ? baseDisplayScore : null);
+    const displayTier = shouldUseCompositeScore
+      ? (item.composite_display_tier || baseDisplayTier || 'critical')
+      : (baseDisplayTier || 'critical');
+    const hint = contextLabel(ctx);
+    const hintTheme = ctx.includes('dessert')
+      ? {
+          bg: theme.accent + '14',
+          border: theme.accent + '3D',
+          text: theme.accent,
+          icon: 'ice-cream-outline' as const,
+        }
+      : ctx.includes('sauce')
+      ? {
+          bg: theme.info + '14',
+          border: theme.info + '3D',
+          text: theme.info,
+          icon: 'flask-outline' as const,
+        }
+      : {
+          bg: theme.primary + '14',
+          border: theme.primary + '3D',
+          text: theme.primary,
+          icon: 'layers-outline' as const,
+        };
+
+    return (
     <TouchableOpacity
       style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}
       activeOpacity={0.7}
@@ -189,6 +363,35 @@ export function BrowseView() {
           </Text>
         </View>
       </View>
+
+      {displayScore !== null ? (
+        <View style={{ gap: 4 }}>
+          <MealMESBadge score={displayScore} tier={displayTier} compact />
+          {item.needs_default_pairing === true && item.default_pairing_ids && item.default_pairing_ids.length > 0 && (
+            <View style={styles.sideIndicatorRow}>
+              <View style={[styles.sideIndicatorPill, { backgroundColor: theme.primary + '12', borderColor: theme.primary + '30' }]}>
+                <Text style={{ fontSize: 10 }}>🥗</Text>
+                <Text style={[styles.sideIndicatorText, { color: theme.primary }]}>+side included</Text>
+              </View>
+            </View>
+          )}
+        </View>
+      ) : hint ? (
+        <View style={styles.contextHintRow}>
+          <View
+            style={[
+              styles.contextHintPill,
+              {
+                backgroundColor: hintTheme.bg,
+                borderColor: hintTheme.border,
+              },
+            ]}
+          >
+            <Ionicons name={hintTheme.icon} size={10} color={hintTheme.text} />
+            <Text style={[styles.contextHintText, { color: hintTheme.text }]} numberOfLines={1}>{hint}</Text>
+          </View>
+        </View>
+      ) : null}
 
       {item.flavor_profile?.length > 0 && (
         <View style={styles.cardTags}>
@@ -236,6 +439,7 @@ export function BrowseView() {
       )}
     </TouchableOpacity>
   );
+  };
 
   const getMultiSelectLabel = (key: keyof Filters, label: string): string => {
     const val = filters[key];
@@ -474,13 +678,14 @@ export function BrowseView() {
         )}
       </View>
 
-      {/* Category Toggle */}
+      {/* ── Top Category Toggle (Meals / Desserts) — hidden when launched from menu ── */}
+      {!hideTopCategoryToggle && (
       <View style={styles.categoryRow}>
-        {CATEGORY_OPTIONS.map((cat) => {
+        {TOP_CATEGORIES.map((cat) => {
           const isActive = selectedCategory === cat.key;
           return (
             <TouchableOpacity
-              key={cat.label}
+              key={cat.key}
               style={[
                 styles.categoryCard,
                 {
@@ -491,13 +696,23 @@ export function BrowseView() {
                     ? theme.primary
                     : theme.border + '55',
                 },
+                isActive && {
+                  shadowColor: theme.primary,
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.18,
+                  shadowRadius: 8,
+                  elevation: 4,
+                },
               ]}
-              onPress={() => setSelectedCategory(cat.key)}
+              onPress={() => {
+                setSelectedCategory(cat.key);
+                setSelectedRoleFilter(null);
+              }}
               activeOpacity={0.7}
             >
               <Ionicons
                 name={cat.icon}
-                size={22}
+                size={20}
                 color={isActive ? theme.primary : theme.textSecondary}
               />
               <Text
@@ -512,38 +727,191 @@ export function BrowseView() {
           );
         })}
       </View>
+      )}
 
-      {/* Filter Chips */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.filterRow}
-        contentContainerStyle={styles.filterRowContent}
-      >
-        {renderFilterChip('Protein', 'protein_type')}
-        {renderFilterChip('Carb', 'carb_type')}
-        {renderFilterChip('Cook Time', 'cook_time')}
-        {renderFilterChip('Meal Type', 'meal_type')}
-        {renderFilterChip('Dietary', 'dietary')}
-        {renderFilterChip('Difficulty', 'difficulty')}
-        {renderFilterChip('Flavor', 'flavor')}
-        {renderFilterChip('Health Benefit', 'health_benefit')}
-        {activeFilterCount > 0 && (
-          <TouchableOpacity style={styles.clearBtn} onPress={clearFilters}>
-            <Ionicons name="refresh" size={14} color={theme.error} />
-            <Text style={[styles.clearBtnText, { color: theme.error }]}>Clear</Text>
-          </TouchableOpacity>
-        )}
-      </ScrollView>
+      {/* ── Sub-segment: Full Meals / Meal Prep (under Meals only) ── */}
+      {selectedCategory === 'meals' && (
+        <View style={styles.subSegmentRow}>
+          {MEALS_SUB_TABS.map((tab) => {
+            const isActive = mealsSubTab === tab.key;
+            return (
+              <TouchableOpacity
+                key={tab.key}
+                style={[
+                  styles.subSegmentPill,
+                  {
+                    backgroundColor: isActive ? theme.primary : 'transparent',
+                    borderColor: isActive ? theme.primary : theme.border + '55',
+                  },
+                ]}
+                onPress={() => {
+                  setMealsSubTab(tab.key);
+                  setSelectedRoleFilter(null);
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={tab.icon}
+                  size={14}
+                  color={isActive ? '#FFFFFF' : theme.textSecondary}
+                />
+                <Text
+                  style={[
+                    styles.subSegmentLabel,
+                    { color: isActive ? '#FFFFFF' : theme.textSecondary },
+                  ]}
+                >
+                  {tab.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
 
-      {/* Active Filters */}
-      {activeFilterCount > 0 && (
-        <View style={styles.activePills}>
+      {/* ── Role sub-filter chips (Meal Prep components mode) ── */}
+      {selectedCategory === 'meals' && mealsSubTab === 'components' && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ marginTop: Spacing.sm, marginBottom: Spacing.xs, flexGrow: 0, flexShrink: 0, height: 38 }}
+          contentContainerStyle={{ paddingHorizontal: Spacing.xl, gap: 8, alignItems: 'center' }}
+        >
+          {([
+            { key: null, label: 'All Components', icon: 'grid-outline' },
+            { key: 'protein_base', label: 'Protein', icon: 'fish-outline' },
+            { key: 'carb_base', label: 'Carbs', icon: 'nutrition-outline' },
+            { key: 'veg_side', label: 'Veggies', icon: 'leaf-outline' },
+            { key: 'sauce', label: 'Sauces', icon: 'flask-outline' },
+          ] as const).map((role) => {
+            const isActive = selectedRoleFilter === role.key;
+            return (
+              <TouchableOpacity
+                key={role.label}
+                onPress={() => setSelectedRoleFilter(role.key)}
+                activeOpacity={0.7}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 5,
+                  paddingHorizontal: 12,
+                  paddingVertical: 7,
+                  borderRadius: BorderRadius.full,
+                  borderWidth: 1,
+                  backgroundColor: isActive ? theme.primary + '18' : theme.surfaceElevated,
+                  borderColor: isActive ? theme.primary + '40' : theme.border + '55',
+                }}
+              >
+                <Ionicons
+                  name={role.icon as any}
+                  size={14}
+                  color={isActive ? theme.primary : theme.textTertiary}
+                />
+                <Text style={{
+                  fontSize: FontSize.xs,
+                  fontWeight: isActive ? '700' : '600',
+                  color: isActive ? theme.primary : theme.textSecondary,
+                }}>
+                  {role.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      )}
+
+      {selectedCategory === 'desserts' && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.filterRow}
+          contentContainerStyle={styles.filterRowContent}
+        >
+          {DESSERT_FILTERS.map((filter) => {
+            const isActive = dessertFilter === filter.key;
+            return (
+              <TouchableOpacity
+                key={filter.key}
+                style={[
+                  styles.filterChip,
+                  {
+                    backgroundColor: isActive ? theme.primary : theme.surfaceElevated + 'BB',
+                    borderColor: isActive ? theme.primary : theme.border + '55',
+                  },
+                ]}
+                onPress={() => setDessertFilter(dessertFilter === filter.key ? null : filter.key)}
+              >
+                <Text
+                  style={[
+                    styles.filterChipText,
+                    { color: isActive ? '#FFFFFF' : theme.textSecondary },
+                  ]}
+                >
+                  {filter.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      )}
+
+      {/* Filter Chips (Full Meals only) */}
+      {isFullMealsMode && (
+        <>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.filterRow}
+            contentContainerStyle={styles.filterRowContent}
+          >
+            {renderFilterChip('Protein', 'protein_type')}
+            {renderFilterChip('Carb', 'carb_type')}
+            {renderFilterChip('Cook Time', 'cook_time')}
+            {renderFilterChip('Meal Type', 'meal_type')}
+            {renderFilterChip('Dietary', 'dietary')}
+            {renderFilterChip('Difficulty', 'difficulty')}
+            {renderFilterChip('Flavor', 'flavor')}
+            {renderFilterChip('Health Benefit', 'health_benefit')}
+            {/* Fits My Budget toggle */}
+            <TouchableOpacity
+              style={[
+                styles.filterChip,
+                {
+                  backgroundColor: fitsBudget ? '#34C759' : theme.surfaceElevated + 'BB',
+                  borderColor: fitsBudget ? '#34C759' : theme.border + '55',
+                },
+              ]}
+              onPress={() => setFitsBudget((v) => !v)}
+            >
+              <Ionicons name="flash" size={12} color={fitsBudget ? '#FFFFFF' : theme.textSecondary} style={{ marginRight: 2 }} />
+              <Text
+                style={[
+                  styles.filterChipText,
+                  { color: fitsBudget ? '#FFFFFF' : theme.textSecondary },
+                ]}
+              >
+                Fits Budget
+              </Text>
+              {fitsBudget && (
+                <Ionicons name="close-circle" size={14} color="#FFFFFF" style={{ marginLeft: 4 }} />
+              )}
+            </TouchableOpacity>
+            {activeFilterCount > 0 && (
+              <TouchableOpacity style={styles.clearBtn} onPress={clearFilters}>
+                <Ionicons name="refresh" size={14} color={theme.error} />
+                <Text style={[styles.clearBtnText, { color: theme.error }]}>Clear</Text>
+              </TouchableOpacity>
+            )}
+          </ScrollView>
+
+          {/* Active Filters */}
+          {activeFilterCount > 0 && (
+            <View style={styles.activePills}>
           {Object.entries(filters).map(([key, value]) => {
             if (!value) return null;
             const isMulti = MULTI_SELECT_FILTERS.includes(key as keyof Filters);
             if (isMulti) {
-              return value.split(',').map((v) => {
+              return value.split(',').map((v: string) => {
                 let label = v;
                 if (key === 'protein_type') label = PROTEIN_OPTIONS.find((p) => p.id === v)?.label || v;
                 else if (key === 'carb_type') label = CARB_OPTIONS.find((c) => c.id === v)?.label || v;
@@ -573,19 +941,21 @@ export function BrowseView() {
               </TouchableOpacity>
             );
           })}
-        </View>
+            </View>
+          )}
+        </>
       )}
 
       {/* Result count */}
       {results && (
         <Text style={[styles.resultCount, { color: theme.textSecondary }]}>
-          {results.total} recipe{results.total !== 1 ? 's' : ''} found
+          {displayedItems.length} recipe{displayedItems.length !== 1 ? 's' : ''} found
         </Text>
       )}
 
       {/* Recipe Grid */}
       <FlatList
-        data={results?.items || []}
+        data={displayedItems}
         renderItem={renderRecipeCard}
         keyExtractor={(item) => item.id}
         numColumns={2}
@@ -630,6 +1000,22 @@ export function BrowseView() {
       />
 
       {renderFilterModal()}
+
+      {/* ── Build Plate FAB ── */}
+      {plateItems.length > 0 && (
+        <TouchableOpacity
+          style={[styles.plateFab, { backgroundColor: theme.primary }]}
+          activeOpacity={0.85}
+          onPress={() => setPlateOpen(true)}
+        >
+          <Ionicons name="restaurant" size={20} color="#fff" />
+          <View style={styles.plateFabBadge}>
+            <Text style={styles.plateFabCount}>{plateItems.length}</Text>
+          </View>
+        </TouchableOpacity>
+      )}
+
+      <PlateComposer visible={plateOpen} onClose={() => setPlateOpen(false)} />
     </View>
   );
 }
@@ -646,17 +1032,39 @@ const styles = StyleSheet.create({
   },
   categoryCard: {
     flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 12,
-    borderRadius: 16,
+    paddingVertical: 10,
+    borderRadius: 14,
     borderWidth: 1.5,
-    gap: 5,
+    gap: 6,
   },
   categoryLabel: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '700',
     letterSpacing: 0.2,
+  },
+  subSegmentRow: {
+    flexDirection: 'row',
+    paddingHorizontal: Spacing.xl,
+    marginTop: Spacing.sm,
+    gap: 10,
+  },
+  subSegmentPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+  },
+  subSegmentLabel: {
+    fontSize: FontSize.sm,
+    fontWeight: '700',
+    letterSpacing: 0.1,
   },
   searchBar: {
     flexDirection: 'row',
@@ -742,7 +1150,7 @@ const styles = StyleSheet.create({
   },
   gridContent: {
     paddingHorizontal: Spacing.xl,
-    paddingBottom: Spacing.huge,
+    paddingBottom: 120,
   },
   gridRow: {
     gap: Spacing.md,
@@ -807,6 +1215,82 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     fontWeight: '500',
   },
+
+  // ── Side indicator ──
+  sideIndicatorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sideIndicatorPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  sideIndicatorText: {
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.1,
+  },
+
+  // ── Context hint ──
+  contextHintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  contextHintPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    gap: 3,
+    borderWidth: 1,
+  },
+  contextHintText: {
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.1,
+  },
+
+  // ── Plate FAB ──
+  plateFab: {
+    position: 'absolute',
+    bottom: 24,
+    right: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  plateFabBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    backgroundColor: '#FF3B30',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  plateFabCount: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+
   empty: {
     alignItems: 'center',
     justifyContent: 'center',

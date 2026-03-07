@@ -24,6 +24,7 @@ import { useTheme } from '../../hooks/useTheme';
 import { nutritionApi, recipeApi, gameApi } from '../../services/api';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
 
+
 type Ingredient = {
   name: string;
   quantity?: string | number;
@@ -304,7 +305,7 @@ export default function CookModeScreen() {
                               await nutritionApi.createLog({
                                 source_type: 'cook_mode',
                                 source_id: recipe.id,
-                                meal_type: 'dinner',
+                                meal_type: 'meal',
                                 servings: 1,
                                 quantity: 1,
                               });

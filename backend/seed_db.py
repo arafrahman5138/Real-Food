@@ -6,10 +6,19 @@ Run:  python seed_db.py
 """
 import uuid
 from app.db import SessionLocal, init_db
+from app.models import gamification as _gamification_models  # noqa: F401
+from app.models import grocery as _grocery_models  # noqa: F401
+from app.models import meal_plan as _meal_plan_models  # noqa: F401
+from app.models import metabolic as _metabolic_models  # noqa: F401
+from app.models import metabolic_profile as _metabolic_profile_models  # noqa: F401
+from app.models import nutrition as _nutrition_models  # noqa: F401
 from app.models.recipe import Recipe
+from app.models import saved_recipe as _saved_recipe_models  # noqa: F401
+from app.models import user as _user_models  # noqa: F401
 from app.seed_meals import SEED_MEALS
 from app.seed_meals_global import GLOBAL_MEALS
 from app.nutrition_tags import compute_health_benefits
+from app.services.metabolic_engine import compute_meal_mes, passes_import_gate, DEFAULT_BUDGET_DICT
 
 # ── protein / carb classification maps ─────────────────────────
 PROTEIN_KEYWORDS: dict[str, list[str]] = {
@@ -193,6 +202,7 @@ def _build_recipe(meal: dict) -> Recipe:
         is_ai_generated=False,
         protein_type=_classify_proteins(meal.get("ingredients", [])),
         carb_type=_classify_carbs(meal.get("ingredients", [])),
+        needs_default_pairing=meal.get("needs_default_pairing"),
     )
 
 
@@ -205,6 +215,7 @@ def seed_recipes():
     try:
         added = 0
         updated = 0
+        skipped_mes = 0
         for meal in ALL_MEALS:
             existing = db.query(Recipe).filter(Recipe.title == meal["title"]).first()
             if existing:
@@ -228,11 +239,17 @@ def seed_recipes():
                 existing.carb_type = _classify_carbs(meal.get("ingredients", []))
                 continue
 
+            # MES import gate: skip meals below quality threshold
+            nutrition = meal.get("nutrition_estimate", {})
+            if nutrition and not passes_import_gate(nutrition):
+                skipped_mes += 1
+                continue
+
             db.add(_build_recipe(meal))
             added += 1
 
         db.commit()
-        print(f"Seeded {added} new + updated {updated} existing ({len(ALL_MEALS)} total definitions).")
+        print(f"Seeded {added} new + updated {updated} existing, skipped {skipped_mes} (MES < 75) ({len(ALL_MEALS)} total definitions).")
     finally:
         db.close()
 

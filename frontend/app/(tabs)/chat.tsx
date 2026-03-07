@@ -21,13 +21,11 @@ import { useTheme } from '../../hooks/useTheme';
 import { useChatStore } from '../../stores/chatStore';
 import { useSavedRecipesStore } from '../../stores/savedRecipesStore';
 import { useGamificationStore } from '../../stores/gamificationStore';
-import { useAuthStore } from '../../stores/authStore';
 import { chatApi } from '../../services/api';
 import { BorderRadius, FontSize, Spacing } from '../../constants/Colors';
+import { cleanRecipeDescription } from '../../utils/recipeDescription';
 import {
-  type RecipeIngredient,
   type RecipeData,
-  type NormalizedAssistantPayload,
   type RecipeDraft,
   normalizeAssistantPayload,
   parseIngredientLine,
@@ -491,9 +489,9 @@ export default function ChatScreen() {
                       </View>
                     </View>
 
-                    {!!recipe.description && (
+                    {!!cleanRecipeDescription(recipe.description) && (
                       <Text style={[styles.recipeDescription, { color: theme.textSecondary }]}>
-                        {recipe.description}
+                        {cleanRecipeDescription(recipe.description)}
                       </Text>
                     )}
 
@@ -809,7 +807,7 @@ const styles = StyleSheet.create({
   },
   messagesContent: {
     padding: Spacing.xl,
-    paddingBottom: Spacing.lg,
+    paddingBottom: 100,
   },
   emptyState: {
     alignItems: 'center',

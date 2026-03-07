@@ -46,6 +46,7 @@ def restore():
             carb_type=entry.get("carb_type", []),
             is_ai_generated=entry.get("is_ai_generated", True),
             image_url=entry.get("image_url"),
+            needs_default_pairing=entry.get("needs_default_pairing"),
         )
         db.add(r)
         added += 1

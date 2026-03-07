@@ -38,6 +38,7 @@ export default function ProfileScreen() {
   const [achievements, setAchievements] = useState<Achievement[]>([]);
   const [loadingAchievements, setLoadingAchievements] = useState(false);
   const [achievementsError, setAchievementsError] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const xp = user?.xp_points || 0;
   const level = Math.floor(xp / XP_PER_LEVEL) + 1;
@@ -69,6 +70,11 @@ export default function ProfileScreen() {
 
   const unlockedCount = achievements.filter((a) => a.unlocked).length;
 
+  const categories = Array.from(new Set(achievements.map((a) => a.category))).filter(Boolean);
+  const filteredAchievements = selectedCategory
+    ? achievements.filter((a) => a.category === selectedCategory)
+    : achievements;
+
   return (
     <ScreenContainer>
       <ScrollView
@@ -79,12 +85,17 @@ export default function ProfileScreen() {
         {/* ── Top Bar ─────────────────────────────────────────── */}
         <View style={styles.topBar}>
           <TouchableOpacity
-            onPress={() => router.back()}
+            onPress={() => router.canGoBack() ? router.back() : router.push('/(tabs)' as any)}
             activeOpacity={0.7}
             style={[styles.topBarBtn, { backgroundColor: theme.surfaceElevated }]}
             hitSlop={8}
           >
-            <Ionicons name="chevron-back" size={20} color={theme.text} />
+            <Ionicons
+              name="chevron-back"
+              size={20}
+              color={theme.text}
+              style={{ transform: [{ translateX: 1 }] }}
+            />
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() => router.push('/settings' as any)}
@@ -210,7 +221,43 @@ export default function ProfileScreen() {
                   </View>
                 </View>
 
-                {achievements.map((achievement) => (
+                {/* Category filter chips */}
+                {categories.length > 1 && (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: Spacing.sm }}>
+                    <View style={{ flexDirection: 'row', gap: Spacing.xs }}>
+                      <TouchableOpacity
+                        onPress={() => setSelectedCategory(null)}
+                        style={[
+                          styles.categoryChip,
+                          { backgroundColor: !selectedCategory ? theme.primary : theme.surfaceElevated },
+                        ]}
+                      >
+                        <Text style={{ fontSize: FontSize.xs, fontWeight: '600', color: !selectedCategory ? '#fff' : theme.textSecondary }}>All</Text>
+                      </TouchableOpacity>
+                      {categories.map((cat) => {
+                        const isActive = selectedCategory === cat;
+                        const catIcon = cat === 'metabolic' ? 'flash' : cat === 'nutrition' ? 'nutrition' : cat === 'progression' ? 'trending-up' : 'ribbon';
+                        return (
+                          <TouchableOpacity
+                            key={cat}
+                            onPress={() => setSelectedCategory(isActive ? null : cat)}
+                            style={[
+                              styles.categoryChip,
+                              { backgroundColor: isActive ? theme.primary : theme.surfaceElevated },
+                            ]}
+                          >
+                            <Ionicons name={catIcon as any} size={12} color={isActive ? '#fff' : theme.textSecondary} />
+                            <Text style={{ fontSize: FontSize.xs, fontWeight: '600', color: isActive ? '#fff' : theme.textSecondary }}>
+                              {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </ScrollView>
+                )}
+
+                {filteredAchievements.map((achievement) => (
                   <View
                     key={achievement.id}
                     style={[
@@ -276,7 +323,7 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   scroll: {
     paddingTop: Spacing.sm,
-    paddingBottom: Spacing.huge,
+    paddingBottom: 120,
   },
   topBar: {
     flexDirection: 'row',
@@ -415,6 +462,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.full,
+  },
+  categoryChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: BorderRadius.full,
